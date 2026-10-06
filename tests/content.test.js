@@ -101,7 +101,7 @@ test('Chromium: продолжение после полной перезагр�
   }finally{await browser.close();}
 });
 
-test('Chromium: категория в обычном select и Ant Design; отсутствие пункта блокирует шаг 2', {timeout:45000},async()=>{
+test('Chromium: категория в обычном select и Ant Design; отсутствие пункта блокирует шаг 2', {timeout:85000},async()=>{
   const browser=await chromium.launch({executablePath:'/usr/lib/chromium/chromium',headless:true,args:['--no-sandbox']});
   try {
     const page=await browser.newPage();
@@ -113,23 +113,33 @@ test('Chromium: категория в обычном select и Ant Design; от�
     const testCase=async(type,missing=false)=>{
       const native='<select id="category"><option>Одежда</option><option value="feed">Корма для животных</option></select>';
       const ant='<div class="ant-select" id="category"><div class="ant-select-selection" role="combobox"><span class="ant-select-selection-selected-value">Одежда</span></div></div>';
-      const html=`<html><head><meta charset="utf-8"></head><body><button role="tab">Организация А</button><p id="token"></p><button data-step="1">Получить токен</button><div><button data-step="2">Получить токен</button>${type==='native'?native:ant}<button data-step="3">Проверить СУЗ</button></div><button data-step="4">Сохранить</button><div id="menu" hidden><div role="option" data-feed>Корма для животных</div></div><script>
+      const html=`<html><head><meta charset="utf-8"></head><body><button role="tab">Организация А</button><p id="token"></p><button data-step="1">Получить токен</button><div><button data-step="2">Получить токен</button>${type==='native'?native:ant}<button data-step="3">Проверить СУЗ</button></div><button data-step="4">Сохранить</button><div id="menu" role="listbox" style="min-height:20px;min-width:100px" hidden><div role="option" data-feed>Корма для животных</div></div><script>
       window.clicks=[];const d=new Date();document.querySelector('#token').textContent='Токен успешно получен: '+d.toLocaleDateString('ru-RU')+' '+d.toLocaleTimeString('ru-RU',{hour12:false});
       document.addEventListener('click',e=>{if(e.target.dataset.step)clicks.push(e.target.dataset.step);if(e.target.hasAttribute('data-feed')){document.querySelector('.ant-select-selection-selected-value').textContent=e.target.textContent;document.querySelector('#menu').hidden=true;}});
-      document.querySelector('.ant-select-selection')?.addEventListener('mousedown',()=>{document.querySelector('#menu').hidden=false});
+      const selection=document.querySelector('.ant-select-selection');
+      const open=()=>{document.querySelector('#menu').hidden=false};
+      if('${type}'==='aria'){
+        selection.setAttribute('aria-controls','a11y');const a11y=document.createElement('div');a11y.id='a11y';a11y.setAttribute('role','listbox');a11y.style.cssText='position:absolute;width:1px;height:1px;overflow:hidden';a11y.innerHTML='<div role=option>Корма для животных</div>';document.body.append(a11y);
+        const menu=document.querySelector('#menu');menu.hidden=false;menu.style.minHeight='0px';menu.style.height='0px';menu.style.overflow='hidden';selection.addEventListener('mousedown',()=>{menu.style.height='20px'});
+      }else if('${type}'==='toggle'){selection.addEventListener('mousedown',()=>{document.querySelector('#menu').hidden=!document.querySelector('#menu').hidden});selection.addEventListener('click',()=>{document.querySelector('#menu').hidden=!document.querySelector('#menu').hidden})}
+      else if('${type}'==='pointer')selection?.addEventListener('pointerdown',open);
+      else if('${type}'==='hover')selection?.addEventListener('mouseover',open);
+      else if('${type}'!=='closed')selection?.addEventListener('mousedown',open);
       </script></body></html>`;
       await page.unrouteAll();await page.route('https://selsup.ru/**',r=>r.fulfill({contentType:'text/html; charset=utf-8',body:html}));
       await page.goto('https://selsup.ru/application/integration/crpt');
       if(missing)await page.locator('[data-feed]').evaluate(el=>el.remove());
       await page.addScriptTag({path:'extension/token.js'});await page.addScriptTag({path:'extension/content.js'});
-      const settings={...DEFAULTS,delay:1,timeout:10,organizations:['Организация А','Тест FBS']};
+      const settings={...DEFAULTS,delay:1,timeout:10,organizations:['Организация А','Тест FBS'],categorySelector:type==='self'?'.ant-select-selection':''};
+      const started=Date.now();
       await page.evaluate(settings=>dispatch({type:'execute',id:'category-run',settings,resume:{pass:1,waitUntil:Date.now(),deadline:Date.now()+10000}}),settings);
       await page.waitForFunction(()=>window.completed,null,{timeout:25000});
-      return {result:await page.evaluate(()=>completed),clicks:await page.evaluate(()=>clicks)};
+      return {result:await page.evaluate(()=>completed),clicks:await page.evaluate(()=>clicks),logs:await page.evaluate(()=>progress),elapsed:Date.now()-started};
     };
-    for(const type of ['native','ant']){
+    for(const type of ['native','ant','self','toggle','hover','pointer','aria']){
       const result=await testCase(type);assert.equal(result.result.ok,true,JSON.stringify(result));assert.deepEqual(result.clicks,['2','3','4']);
     }
+    const closed=await testCase('closed');assert.equal(closed.result.ok,false);assert.match(closed.result.error,/Список категории не открылся/);assert.deepEqual(closed.clicks,[]);assert.ok(closed.elapsed<10000);assert.equal(closed.logs.some(x=>x.message==='Категория: открытие списка подтверждено.'),false);
     const failed=await testCase('ant',true);assert.equal(failed.result.ok,false);assert.match(failed.result.error,/не найден доступный пункт/);assert.deepEqual(failed.clicks,[]);
   }finally{await browser.close();}
 });

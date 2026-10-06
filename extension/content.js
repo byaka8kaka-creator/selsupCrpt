@@ -110,26 +110,89 @@
     }
     throw Error('Не найдено поле категории между нижним токеном и проверкой СУЗ. Задайте его CSS-селектор.');
   }
+  const popupSelector = '[role="listbox"], [role="menu"], .ant-select-dropdown, .ant-dropdown, .ant-dropdown-menu, .el-select-dropdown, .rc-select-dropdown, .dropdown-menu, .p-dropdown-panel';
+  const popupVisible = el => visible(el) && getComputedStyle(el).opacity !== '0' && el.getBoundingClientRect().width > 1 && el.getBoundingClientRect().height > 1;
+  function popupState(run, control, initial) {
+    const visiblePopups = [...document.querySelectorAll(popupSelector)].filter(popupVisible);
+    const ids = [control, ...control.querySelectorAll('[aria-controls], [aria-owns]')]
+      .flatMap(el => `${el.getAttribute('aria-controls') || ''} ${el.getAttribute('aria-owns') || ''}`.split(/\s+/)).filter(Boolean);
+    const associated = ids.map(id => document.getElementById(id)).filter(el => el && popupVisible(el));
+    let menus = associated.length ? associated : visiblePopups.filter(el => !initial.has(el));
+    if (!menus.length && run.settings.categoryOptionSelector) {
+      let options;
+      try { options = [...document.querySelectorAll(run.settings.categoryOptionSelector)].filter(el => visible(el) && el !== control && !control.contains(el)); }
+      catch { throw Error('Некорректный CSS-селектор пункта категории.'); }
+      menus = options.map(el => el.closest(popupSelector) || el.parentElement);
+    }
+    return [...new Set(menus)];
+  }
+  async function openCategory(run, control) {
+    if (control instanceof HTMLSelectElement) {
+      await report(run, 'Категория: найден стандартный select, выбор значения.');
+      return [];
+    }
+    const initial = new Set([...document.querySelectorAll(popupSelector)].filter(popupVisible));
+    const end = Date.now() + Math.min(run.settings.timeout * 1000, 8000);
+    const opened = () => popupState(run, control, initial);
+    const waitOpened = async ms => {
+      const until = Math.min(end, Date.now() + ms);
+      do { check(run); const menus = opened(); if (menus.length) return menus; await pause(run, 100); } while (Date.now() < until);
+      return [];
+    };
+    let menus = opened();
+    if (menus.length) { await report(run, 'Категория: список уже открыт.'); return menus; }
+    const selector = '.ant-select-selector, .ant-select-selection, .ant-dropdown-trigger, [role="combobox"], nz-select-top-control';
+    const primary = control.matches(selector) ? control : control.querySelector(selector) || control;
+    const targets = [...new Set([primary, control.querySelector('.ant-select-arrow, .ant-select-suffix, .el-input__suffix')])].filter(el => el && visible(el));
+    for (const target of targets) {
+      target.scrollIntoView({ block: 'center' });
+      const rect = target.getBoundingClientRect();
+      const mouse = { bubbles: true, cancelable: true, view: window, button: 0, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 };
+      const strategies = [
+        ['наведение', () => {
+          target.dispatchEvent(new MouseEvent('mouseover', { ...mouse, relatedTarget: document.body }));
+          target.dispatchEvent(new MouseEvent('mouseenter', { ...mouse, bubbles: false }));
+        }],
+        ['событие указателя', () => {
+          target.dispatchEvent(new PointerEvent('pointerdown', { ...mouse, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+          target.dispatchEvent(new PointerEvent('pointerup', { ...mouse, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+        }],
+        ['нажатие мыши', () => {
+          target.focus({ preventScroll: true });
+          target.dispatchEvent(new MouseEvent('mousedown', { ...mouse, buttons: 1 }));
+          target.dispatchEvent(new MouseEvent('mouseup', mouse));
+        }],
+        ['клик', () => target.click()],
+        ['клавиша ArrowDown', () => {
+          const keyboardTarget = target.querySelector('input:not([type="hidden"])') || target;
+          keyboardTarget.focus({ preventScroll: true });
+          keyboardTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40, bubbles: true, cancelable: true }));
+          keyboardTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+        }]
+      ];
+      for (const [name, action] of strategies) {
+        check(run); menus = opened(); if (menus.length) return menus;
+        if (Date.now() >= end) break;
+        await report(run, `Категория: попытка открытия (${name}).`);
+        action(); menus = await waitOpened(800);
+        if (menus.length) { await report(run, 'Категория: открытие списка подтверждено.'); return menus; }
+      }
+    }
+    throw Error('Список категории не открылся. Пункт «Корма для животных» не искался. Проверьте CSS-селектор поля категории.');
+  }
   async function selectCategory(run) {
     const category = 'Корма для животных';
     const control = await categoryControl(run);
-    await report(run, 'Категория: открытие списка.');
-    check(run); control.scrollIntoView({ block: 'center' });
-    const antSelection = control.querySelector('.ant-select-selector, .ant-select-selection');
-    if (antSelection) {
-      antSelection.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, view: window }));
-      antSelection.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, view: window }));
-      antSelection.click();
-    } else control.click();
+    const menus = await openCategory(run, control);
     await pause(run, run.settings.delay * 1000);
     const deadline = Date.now() + run.settings.timeout * 1000;
     while (true) {
       check(run); let options;
       if (control instanceof HTMLSelectElement) options = [...control.options].filter(el => normalize(el.textContent) === normalize(category));
       else if (run.settings.categoryOptionSelector) {
-        try { options = [...document.querySelectorAll(run.settings.categoryOptionSelector)].filter(visible); }
+        try { options = [...document.querySelectorAll(run.settings.categoryOptionSelector)].filter(el => visible(el) && menus.some(menu => menu === el || menu.contains(el))); }
         catch { throw Error('Некорректный CSS-селектор пункта категории.'); }
-      } else options = candidates(category, true).filter(el => el !== control && !control.contains(el));
+      } else options = candidates(category, true).filter(el => menus.some(menu => menu === el || menu.contains(el)));
       if (options.length > 1) throw Error('Несколько пунктов «Корма для животных». Задайте CSS-селектор пункта.');
       if (options.length === 1 && enabled(options[0])) {
         if (normalize(options[0].textContent || '') !== normalize(category)) throw Error('Селектор пункта указывает на другую категорию.');
