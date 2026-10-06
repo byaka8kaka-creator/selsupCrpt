@@ -15,7 +15,7 @@ async function schedule() {
 async function finish(id, error) {
   const { run } = await chrome.storage.local.get('run');
   if (run?.id !== id) return;
-  await log(error ? 'error' : 'success', error || 'Завершено: оба прохода выполнены, отправлены клики сохранения.');
+  await log(error ? 'error' : 'success', error || 'Завершено: оба прохода выполнены, верхние токены и категория подтверждены, отправлены клики сохранения.');
   await chrome.storage.local.set({ run: null }); await chrome.alarms.clear(WATCH);
 }
 async function execute(run, s) {
@@ -37,7 +37,7 @@ async function execute(run, s) {
       await new Promise(r => setTimeout(r, 250));
     }
     if (!tab.url?.startsWith(URL)) throw Error('Открыта другая страница. Войдите в SelSup и повторите запуск.');
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['token.js', 'content.js'] });
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'execute', id: run.id, settings: s });
     if (!result?.ok || !result.started) throw Error(result?.error || 'Сценарий не запущен на странице.');
   } catch (e) { await exclusive(() => finish(run.id, `Запуск остановлен: ${e.message}`)); }
@@ -47,7 +47,7 @@ async function start(source) {
   const { run: current, lastScheduledDay } = await chrome.storage.local.get(['run', 'lastScheduledDay']);
   if (current) throw Error('Сценарий уже выполняется.');
   if (source === 'schedule' && (!s.enabled || lastScheduledDay === dayKey())) return;
-  const run = { id: crypto.randomUUID(), heartbeat: Date.now(), tabId: null };
+  const run = { id: crypto.randomUUID(), heartbeat: Date.now(), tabId: null, settings: s, resume: null };
   await chrome.storage.local.set({ run, ...(source === 'schedule' ? { lastScheduledDay: dayKey() } : {}) });
   await chrome.alarms.create(WATCH, { periodInMinutes: 1 });
   await log('info', `Запуск: ${source === 'schedule' ? 'по расписанию' : 'вручную'}.`);
@@ -57,7 +57,19 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   exclusive(async () => {
     if (sender.tab) {
       const { run } = await chrome.storage.local.get('run');
-      if (!run || sender.tab.id !== run.tabId || message.id !== run.id) return { ok: false };
+      if (!run || sender.tab.id !== run.tabId) return { ok: false };
+      if (message.type === 'resume') {
+        if (!run.resume || !run.settings) return { ok: false };
+        run.heartbeat = Date.now(); await chrome.storage.local.set({ run });
+        await log('info', 'Страница перезагружена: продолжается проверка верхнего токена.');
+        return { ok: true, id: run.id, settings: run.settings, resume: run.resume };
+      }
+      if (message.id !== run.id) return { ok: false };
+      if (message.type === 'checkpoint') {
+        if (message.resume !== null && (!Number.isInteger(message.resume?.pass) || message.resume.pass < 0 || message.resume.pass > 1 || !Number.isFinite(message.resume.deadline) || !Number.isFinite(message.resume.waitUntil))) return { ok: false };
+        run.resume = message.resume; run.heartbeat = Date.now();
+        await chrome.storage.local.set({ run }); return { ok: true };
+      }
       if (message.type === 'finished') {
         await finish(run.id, message.result?.ok ? null : (message.result?.error || 'Сценарий завершился без результата.'));
         return { ok: true };

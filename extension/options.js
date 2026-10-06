@@ -14,6 +14,8 @@ async function refresh() {
 }
 const { settings } = await chrome.storage.local.get('settings');
 const s = { ...DEFAULTS, ...settings };
+const extraSelectors = ['categorySelector', 'categoryOptionSelector', 'tokenStatusSelector'];
+extraSelectors.forEach(key => $(key).value = s[key]);
 for (const key of ['time', 'delay', 'timeout']) $(key).value = s[key];
 $('enabled').checked = s.enabled; $('org1').value = s.organizations[0]; $('org2').value = s.organizations[1];
 s.selectors.forEach((v, i) => $(`selector${i+1}`).value = v);
@@ -21,8 +23,9 @@ $('settings').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     const settings = validate({ enabled: $('enabled').checked, time: $('time').value, delay: Number($('delay').value), timeout: Number($('timeout').value), organizations: [$('org1').value.trim(), $('org2').value.trim()], selectors: Array.from({ length: 5 }, (_, i) => $(`selector${i+1}`).value.trim()) });
+    extraSelectors.forEach(key => settings[key] = $(key).value.trim());
     if (settings.selectors[4] && !settings.selectors[4].includes('{organization}')) throw Error('В селекторе шага 5 нужен шаблон {organization}.');
-    for (const selector of settings.selectors) if (selector) document.querySelector(selector.replaceAll('{organization}', CSS.escape(settings.organizations[0])));
+    for (const selector of [...settings.selectors, ...extraSelectors.map(key => settings[key])]) if (selector) document.querySelector(selector.replaceAll('{organization}', CSS.escape(settings.organizations[0])));
     await command('save', { settings }); $('status').textContent = 'Настройки сохранены.'; await refresh();
   } catch (e) { showError(e); }
 });

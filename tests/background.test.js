@@ -25,6 +25,13 @@ test('service worker: расписание, взаимная блокировк�
   assert.ok(data.run.tabId===1);
   assert.equal((await command('progress',{id:data.run.id,message:'Шаг 1'},{id:'test',tab:{id:2}})).ok,false);
   assert.equal((await command('progress',{id:data.run.id,message:'Шаг 1'},{id:'test',tab:{id:1}})).ok,true);
+  const checkpoint={pass:1,waitUntil:Date.now(),deadline:Date.now()+10000};
+  assert.equal((await command('checkpoint',{id:data.run.id,resume:checkpoint},{id:'test',tab:{id:1}})).ok,true);
+  assert.equal((await command('resume',{}, {id:'test',tab:{id:2}})).ok,false);
+  const resumed=await command('resume',{}, {id:'test',tab:{id:1}});
+  assert.equal(resumed.resume.pass,1); assert.equal(resumed.settings.time,DEFAULTS.time);
+  await command('checkpoint',{id:data.run.id,resume:null},{id:'test',tab:{id:1}});
+  assert.equal((await command('resume',{}, {id:'test',tab:{id:1}})).ok,false);
   await command('finished',{id:data.run.id,result:{ok:true}},{id:'test',tab:{id:1}}); await settle();
   assert.equal(data.run,null); assert.equal(data.logs.at(-1).level,'success');
   events.alarm({name:'daily'}); await settle();

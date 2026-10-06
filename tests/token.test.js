@@ -1,0 +1,20 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+const context = vm.createContext({Date});
+vm.runInContext(await readFile('extension/token.js','utf8'),context);
+const token=context.SelSupToken;
+test('верхний токен: строгий формат, календарная дата и границы ±5 минут',()=>{
+  const expected=new Date(2026,9,6,11,27,34).getTime();
+  assert.equal(token.parse('Токен успешно получен: 06.10.2026 11:27:34'),expected);
+  assert.equal(token.parse('Токен ЦРПТ успешно получен: 06.10.2026 11:27:34'),null);
+  assert.equal(token.parse('Токен СУЗ успешно получен: 06.10.2026 11:27:34'),null);
+  assert.equal(token.parse('Токен успешно получен: 31.02.2026 11:27:34'),null);
+  assert.equal(token.parse('Токен успешно получен: 06.10.2026 25:27:34'),null);
+  assert.equal(token.fresh(expected,expected+300000),true);
+  assert.equal(token.fresh(expected,expected-300000),true);
+  assert.equal(token.fresh(expected,expected+300001),false);
+  assert.equal(token.fresh(expected,expected-300001),false);
+  assert.equal(token.fresh(null,expected),false);
+});

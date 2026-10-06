@@ -41,24 +41,143 @@
     }
     throw Error(`Шаг ${step}: элемент не найден или недоступен. Проверьте вход, страницу и настройки.`);
   }
-  async function click(run, step, organization, label) {
+  async function click(run, step, organization, label, beforeClick) {
     const el = await target(run, step, organization);
     await report(run, `${label}: нажатие.`);
     check(run);
     if (!el.isConnected || !visible(el) || !enabled(el)) throw Error(`Шаг ${step}: элемент изменился перед нажатием. Повторите после проверки страницы.`);
+    if (beforeClick) await beforeClick();
+    check(run);
     el.scrollIntoView({ block: 'center' }); el.click();
     await pause(run, run.settings.delay * 1000);
     await report(run, `${label}: пауза завершена.`);
+  }
+  async function checkpoint(run, resume) {
+    check(run);
+    const response = await chrome.runtime.sendMessage({ type: 'checkpoint', id: run.id, resume });
+    if (!response?.ok) throw Error('Не удалось сохранить состояние перед обновлением страницы.');
+    run.resume = resume;
+  }
+  function tokenStatuses(run) {
+    let nodes;
+    try { nodes = [...document.querySelectorAll(run.settings.tokenStatusSelector || 'body *')].filter(visible); }
+    catch { throw Error('Некорректный CSS-селектор статуса токена.'); }
+    const statuses = nodes.map(el => ({ el, time: SelSupToken.parse(el.textContent || '') })).filter(x => x.time !== null);
+    return statuses.filter(x => !statuses.some(y => x !== y && x.el.contains(y.el)));
+  }
+  async function verifyToken(run) {
+    await pause(run, Math.max(0, run.resume.waitUntil - Date.now()));
+    await report(run, 'Проверка верхнего токена: ожидается обновлённый успешный статус с датой в пределах ±5 минут.');
+    while (Date.now() <= run.resume.deadline) {
+      check(run);
+      const leaves = tokenStatuses(run);
+      if (leaves.length > 1) throw Error('Несколько статусов верхнего токена. Задайте CSS-селектор статуса.');
+      if (leaves.length === 1 && SelSupToken.fresh(leaves[0].time)) {
+        const time = leaves[0].time;
+        // The page timestamp has one-second precision: a renewal within the
+        // same second as the click can legitimately retain the same text.
+        const updated = !Number.isFinite(run.resume.beforeTime) || time !== run.resume.beforeTime || time === Math.floor(run.resume.clickedAt / 1000) * 1000;
+        if (updated) {
+          await report(run, 'Верхний токен успешно получен: статус обновлён, дата соответствует текущему времени (±5 минут).');
+          await checkpoint(run, null);
+          return;
+        }
+      }
+      await pause(run, 250);
+    }
+    throw Error('Верхний токен не подтверждён: статус не обновился или нет корректной надписи «Токен успешно получен» с датой в пределах ±5 минут.');
+  }
+  function categoryControls(run) {
+    if (run.settings.categorySelector) return [...document.querySelectorAll(run.settings.categorySelector)].filter(visible);
+    const tokens = candidates('ПОЛУЧИТЬ ТОКЕН'), checks = candidates('ПРОВЕРИТЬ СУЗ');
+    if (tokens.length !== 2 || checks.length !== 1) return [];
+    const lower = tokens[1], checkButton = checks[0];
+    let row = lower.parentElement;
+    while (row && !row.contains(checkButton)) row = row.parentElement;
+    if (!row) return [];
+    const controls = [...row.querySelectorAll('select, [role="combobox"], .ant-select, .el-select, .v-select, button, a, [role="button"], [aria-haspopup="listbox"], [aria-haspopup="menu"]')]
+      .filter(el => visible(el) && (lower.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) && (el.compareDocumentPosition(checkButton) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return controls.filter(el => !controls.some(other => other !== el && other.contains(el)));
+  }
+  async function categoryControl(run) {
+    const deadline = Date.now() + run.settings.timeout * 1000;
+    while (Date.now() <= deadline) {
+      check(run); let found;
+      try { found = categoryControls(run); } catch { throw Error('Некорректный CSS-селектор выбора категории.'); }
+      if (found.length > 1) throw Error('Несколько полей категории. Задайте CSS-селектор выбора категории.');
+      if (found.length === 1 && enabled(found[0])) return found[0];
+      await pause(run, 250);
+    }
+    throw Error('Не найдено поле категории между нижним токеном и проверкой СУЗ. Задайте его CSS-селектор.');
+  }
+  async function selectCategory(run) {
+    const category = 'Корма для животных';
+    const control = await categoryControl(run);
+    await report(run, 'Категория: открытие списка.');
+    check(run); control.scrollIntoView({ block: 'center' });
+    const antSelection = control.querySelector('.ant-select-selector, .ant-select-selection');
+    if (antSelection) {
+      antSelection.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, view: window }));
+      antSelection.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, view: window }));
+      antSelection.click();
+    } else control.click();
+    await pause(run, run.settings.delay * 1000);
+    const deadline = Date.now() + run.settings.timeout * 1000;
+    while (true) {
+      check(run); let options;
+      if (control instanceof HTMLSelectElement) options = [...control.options].filter(el => normalize(el.textContent) === normalize(category));
+      else if (run.settings.categoryOptionSelector) {
+        try { options = [...document.querySelectorAll(run.settings.categoryOptionSelector)].filter(visible); }
+        catch { throw Error('Некорректный CSS-селектор пункта категории.'); }
+      } else options = candidates(category, true).filter(el => el !== control && !control.contains(el));
+      if (options.length > 1) throw Error('Несколько пунктов «Корма для животных». Задайте CSS-селектор пункта.');
+      if (options.length === 1 && enabled(options[0])) {
+        if (normalize(options[0].textContent || '') !== normalize(category)) throw Error('Селектор пункта указывает на другую категорию.');
+        await report(run, 'Категория: выбор «Корма для животных».');
+        check(run);
+        if (control instanceof HTMLSelectElement) {
+          control.value = options[0].value;
+          control.dispatchEvent(new Event('input', { bubbles: true }));
+          control.dispatchEvent(new Event('change', { bubbles: true }));
+        } else { options[0].scrollIntoView({ block: 'center' }); options[0].click(); }
+        break;
+      }
+      if (Date.now() > deadline) throw Error('В списке не найден доступный пункт «Корма для животных».');
+      await pause(run, 250);
+    }
+    await pause(run, run.settings.delay * 1000);
+    const confirmationDeadline = Date.now() + run.settings.timeout * 1000;
+    while (Date.now() <= confirmationDeadline) {
+      const current = await categoryControl(run);
+      const selected = current instanceof HTMLSelectElement ? current.selectedOptions[0]?.textContent : (current.querySelector('.ant-select-selection-item, .ant-select-selection-selected-value')?.textContent || current.textContent || current.value || '');
+      if (normalize(selected || '') === normalize(category)) {
+        await report(run, 'Категория подтверждена: «Корма для животных».'); return;
+      }
+      await pause(run, 250);
+    }
+    throw Error('Выбор категории «Корма для животных» не подтверждён в поле.');
   }
   async function execute(run) {
     const heartbeat = setInterval(() => {
       chrome.runtime.sendMessage({ type: 'heartbeat', id: run.id }).then(r => { if (!r?.ok) run.cancelled = true; }).catch(() => { run.cancelled = true; });
     }, 20000);
     try {
-      await report(run, 'Страница открыта. Выбор первой организации.');
-      await click(run, 5, run.settings.organizations[0], 'Подготовка: первая организация');
-      for (let pass = 0; pass < 2; pass++) {
-        for (let step = 1; step <= 5; step++) {
+      const resumedPass = run.resume?.pass;
+      if (resumedPass === undefined) {
+        await report(run, 'Страница открыта. Выбор первой организации.');
+        await click(run, 5, run.settings.organizations[0], 'Подготовка: первая организация');
+      } else await report(run, 'Продолжение после обновления страницы, без повторного клика верхнего токена.');
+      for (let pass = resumedPass ?? 0; pass < 2; pass++) {
+        if (pass !== resumedPass) {
+          await click(run, 1, null, `Проход ${pass+1}, шаг 1 (верхний токен)`, () => checkpoint(run, {
+            pass, clickedAt: Date.now(), beforeTime: tokenStatuses(run)[0]?.time ?? null,
+            waitUntil: Date.now() + run.settings.delay * 1000,
+            deadline: Date.now() + (run.settings.delay + run.settings.timeout) * 1000
+          }));
+        }
+        await verifyToken(run);
+        await selectCategory(run);
+        for (let step = 2; step <= 5; step++) {
           const names = ['верхний токен', 'нижний токен', 'проверка СУЗ', 'сохранение', 'переключение организации'];
           await click(run, step, run.settings.organizations[pass === 0 ? 1 : 0], `Проход ${pass+1}, шаг ${step} (${names[step-1]})`);
         }
@@ -66,6 +185,11 @@
       return { ok: true };
     } catch (e) { return { ok: false, error: e.message }; }
     finally { clearInterval(heartbeat); if (active === run) active = null; }
+  }
+  function begin(message) {
+    active = { id: message.id, settings: message.settings, resume: message.resume || null, cancelled: false };
+    const run = active;
+    void execute(run).then(result => chrome.runtime.sendMessage({ type: 'finished', id: run.id, result })).catch(() => {});
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id) return;
@@ -78,11 +202,12 @@
       if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt') {
         respond({ ok: false, error: 'Неверная страница SelSup.' }); return;
       }
-      active = { id: message.id, settings: message.settings, cancelled: false };
-      const run = active;
       respond({ ok: true, started: true });
-      void execute(run).then(result => chrome.runtime.sendMessage({ type: 'finished', id: run.id, result })).catch(() => {});
+      begin(message);
       return;
     }
   });
+  if (location.origin === 'https://selsup.ru' && location.pathname === '/application/integration/crpt') {
+    void chrome.runtime.sendMessage({ type: 'resume' }).then(message => { if (message?.ok && message.resume && !active) begin(message); }).catch(() => {});
+  }
 })();

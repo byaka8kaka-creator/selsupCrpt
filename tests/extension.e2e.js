@@ -16,12 +16,7 @@ test('ежедневное локальное расписание и прове
   assert.throws(() => validate({ ...DEFAULTS, organizations: ['A', 'A'] }));
 });
 
-const fixture = `<!doctype html><html><body>
-<button role="tab" data-org="A">Организация А</button><button role="tab" data-org="B"><span>Тест FBS</span></button>
-<button data-step="1">ПОЛУЧИТЬ ТОКЕН</button><button data-step="2">Получить токен</button>
-<button data-step="3">ПРОВЕРИТЬ СУЗ</button><button data-step="4">СОХРАНИТЬ</button>
-<script>window.clicks=[]; document.addEventListener('click', e=>{const el=e.target.closest('button'); if(el) clicks.push(el.dataset.org || el.dataset.step)});</script>
-</body></html>`;
+import {fixture,sequence} from './fixture.js';
 
 test('реальное расширение Chromium: настройки, 2 прохода, журнал, остановка, ошибки, alarm', { timeout: 90000 }, async () => {
   const profile = await mkdtemp(path.join(tmpdir(), 'selsup-test-'));
@@ -42,7 +37,7 @@ test('реальное расширение Chromium: настройки, 2 пр
     assert.equal((await command('start')).ok, false, 'parallel execution rejected');
     await ui.waitForFunction(async () => !(await chrome.storage.local.get('run')).run, null, { timeout: 25000 });
     let site = context.pages().find(p => p.url().startsWith('https://selsup.ru/'));
-    assert.deepEqual(await site.evaluate(() => clicks), ['A','1','2','3','4','B','1','2','3','4','A']);
+    assert.deepEqual(await site.evaluate(() => clicks), sequence);
     let state = await ui.evaluate(() => chrome.storage.local.get(['logs', 'settings']));
     assert.equal(state.logs.at(-1).level, 'success');
     assert.equal(state.logs.filter(l => l.message.includes(': нажатие.')).length, 11);
@@ -60,7 +55,7 @@ test('реальное расширение Chromium: настройки, 2 пр
     assert.equal((await command('start')).ok, true);
     await ui.waitForFunction(async () => !(await chrome.storage.local.get('run')).run, null, { timeout: 20000 });
     site = context.pages().filter(p => p.url().startsWith('https://selsup.ru/')).at(-1);
-    assert.deepEqual(await site.evaluate(() => clicks), ['A','1']);
+    assert.deepEqual(await site.evaluate(() => clicks), ['A','1','open','feed']);
     assert.match((await ui.evaluate(() => chrome.storage.local.get('logs'))).logs.at(-1).message, /Шаг 2/);
     // Alarm handler schedules the next day and honors daily deduplication.
     await command('save', { settings: { ...DEFAULTS, enabled:true, organizations:['Организация А','Тест FBS'] } });
