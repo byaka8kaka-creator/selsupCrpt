@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "SelSup — ежедневное обновление CRPT",
+  "version": "1.0.0",
+  "description": "Обновление токенов двух организаций по расписанию с журналом действий.",
+  "permissions": ["alarms", "storage", "scripting"],
+  "host_permissions": ["https://selsup.ru/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "options.html", "default_title": "SelSup CRPT"},
+  "options_page": "options.html"
+}
