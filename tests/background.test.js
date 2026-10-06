@@ -32,6 +32,12 @@ test('service worker: расписание, взаимная блокировк�
   assert.equal(resumed.resume.pass,1); assert.equal(resumed.settings.time,DEFAULTS.time);
   await command('checkpoint',{id:data.run.id,resume:null},{id:'test',tab:{id:1}});
   assert.equal((await command('resume',{}, {id:'test',tab:{id:1}})).ok,false);
+  const auth={deadline:Date.now()+10000,attempted:true,returning:false};
+  assert.equal((await command('authCheckpoint',{id:data.run.id,auth},{id:'test',tab:{id:1}})).ok,true);
+  const loginResume=await command('resume',{}, {id:'test',tab:{id:1}});
+  assert.equal(loginResume.auth.attempted,true);assert.equal(loginResume.auth.deadline,auth.deadline);
+  assert.equal(loginResume.resume,null);
+  await command('authCheckpoint',{id:data.run.id,auth:null},{id:'test',tab:{id:1}});
   await command('finished',{id:data.run.id,result:{ok:true}},{id:'test',tab:{id:1}}); await settle();
   assert.equal(data.run,null); assert.equal(data.logs.at(-1).level,'success');
   events.alarm({name:'daily'}); await settle();

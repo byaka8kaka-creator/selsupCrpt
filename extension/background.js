@@ -36,7 +36,7 @@ async function execute(run, s) {
       if (Date.now() > end) throw Error('Страница не загрузилась вовремя.');
       await new Promise(r => setTimeout(r, 250));
     }
-    if (!tab.url?.startsWith(URL)) throw Error('Открыта другая страница. Войдите в SelSup и повторите запуск.');
+    if (!tab.url || !/^https:\/\/selsup\.ru(?:\/|$)/.test(tab.url)) throw Error('Открыта страница за пределами SelSup. Запуск остановлен.');
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['token.js', 'content.js'] });
     const result = await chrome.tabs.sendMessage(tab.id, { type: 'execute', id: run.id, settings: s });
     if (!result?.ok || !result.started) throw Error(result?.error || 'Сценарий не запущен на странице.');
@@ -47,7 +47,7 @@ async function start(source) {
   const { run: current, lastScheduledDay } = await chrome.storage.local.get(['run', 'lastScheduledDay']);
   if (current) throw Error('Сценарий уже выполняется.');
   if (source === 'schedule' && (!s.enabled || lastScheduledDay === dayKey())) return;
-  const run = { id: crypto.randomUUID(), heartbeat: Date.now(), tabId: null, settings: s, resume: null };
+  const run = { id: crypto.randomUUID(), heartbeat: Date.now(), tabId: null, settings: s, resume: null, auth: null };
   await chrome.storage.local.set({ run, ...(source === 'schedule' ? { lastScheduledDay: dayKey() } : {}) });
   await chrome.alarms.create(WATCH, { periodInMinutes: 1 });
   await log('info', `Запуск: ${source === 'schedule' ? 'по расписанию' : 'вручную'}.`);
@@ -59,12 +59,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const { run } = await chrome.storage.local.get('run');
       if (!run || sender.tab.id !== run.tabId) return { ok: false };
       if (message.type === 'resume') {
-        if (!run.resume || !run.settings) return { ok: false };
+        if ((!run.resume && !run.auth) || !run.settings) return { ok: false };
         run.heartbeat = Date.now(); await chrome.storage.local.set({ run });
-        await log('info', 'Страница перезагружена: продолжается проверка верхнего токена.');
-        return { ok: true, id: run.id, settings: run.settings, resume: run.resume };
+        await log('info', run.auth ? 'Страница загружена: продолжается авторизация.' : 'Страница перезагружена: продолжается проверка верхнего токена.');
+        return { ok: true, id: run.id, settings: run.settings, resume: run.resume, auth: run.auth || null };
       }
       if (message.id !== run.id) return { ok: false };
+      if (message.type === 'authCheckpoint') {
+        if (message.auth !== null && (!Number.isFinite(message.auth?.deadline) || typeof message.auth.attempted !== 'boolean' || typeof message.auth.returning !== 'boolean')) return { ok: false };
+        run.auth = message.auth; run.heartbeat = Date.now();
+        await chrome.storage.local.set({ run }); return { ok: true };
+      }
       if (message.type === 'checkpoint') {
         if (message.resume !== null && (!Number.isInteger(message.resume?.pass) || message.resume.pass < 0 || message.resume.pass > 1 || !Number.isFinite(message.resume.deadline) || !Number.isFinite(message.resume.waitUntil))) return { ok: false };
         run.resume = message.resume; run.heartbeat = Date.now();

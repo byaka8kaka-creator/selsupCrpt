@@ -220,11 +220,83 @@
     }
     throw Error('Выбор категории «Корма для животных» не подтверждён в поле.');
   }
+  async function authCheckpoint(run, auth) {
+    check(run);
+    const response = await chrome.runtime.sendMessage({ type: 'authCheckpoint', id: run.id, auth });
+    if (!response?.ok) throw Error('Не удалось сохранить состояние авторизации.');
+    run.auth = auth;
+  }
+  function loginForm() {
+    const passwords = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+    if (!passwords.length) return null;
+    const buttons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+      .filter(el => visible(el) && normalize(el.tagName === 'INPUT' ? el.value : el.textContent || '') === 'ВОЙТИ');
+    const pairs = buttons.flatMap(button => {
+      const form = button.closest('form');
+      return passwords.filter(password => !form || form.contains(password)).map(password => ({ button, password, root: form || (() => { let root = password.parentElement; while (root && !root.contains(button)) root = root.parentElement; return root || document.body; })() }));
+    });
+    if (pairs.length > 1) throw Error('Несколько форм авторизации. Нельзя однозначно выбрать кнопку «Войти».');
+    return pairs[0] || null;
+  }
+  function crptReady(run) {
+    if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt' || document.readyState === 'loading') return false;
+    const tokenButtons = candidates('ПОЛУЧИТЬ ТОКЕН');
+    try {
+      return [1, 2, 3].every(step => run.settings.selectors[step - 1]
+        ? [...document.querySelectorAll(run.settings.selectors[step - 1])].some(visible)
+        : step === 3 ? candidates('ПРОВЕРИТЬ СУЗ').length > 0 : tokenButtons.length >= 2);
+    } catch { throw Error('Некорректный CSS-селектор кнопок страницы CRPT.'); }
+  }
+  async function ensureAuthorized(run) {
+    const deadline = run.auth?.deadline ?? Date.now() + run.settings.timeout * 1000;
+    let detected = false, autofillLogged = false;
+    while (Date.now() <= deadline) {
+      check(run);
+      const form = loginForm();
+      if (form) {
+        if (!run.auth) {
+          await authCheckpoint(run, { deadline, attempted: false, returning: false, entryPath: location.pathname });
+          await report(run, 'Авторизация: обнаружена страница входа.');
+        }
+        detected = true;
+        if (!run.auth.attempted && enabled(form.button)) {
+          // Only presence is checked. Credential values never enter messages,
+          // logs, settings, or extension storage; the browser fills the form.
+          const usernames = [...form.root.querySelectorAll('input')].filter(el => visible(el) && ['text','email','tel'].includes(el.type));
+          const filled = form.password.value.length > 0 && usernames.some(el => el.value.trim().length > 0);
+          if (filled) {
+            await authCheckpoint(run, { ...run.auth, attempted: true });
+            await report(run, 'Авторизация: нажатие кнопки «Войти» с данными, подставленными браузером.');
+            check(run);
+            if (!form.button.isConnected || !visible(form.button) || !enabled(form.button)) throw Error('Форма входа изменилась перед нажатием. Повторите запуск после проверки страницы.');
+            form.button.scrollIntoView({ block: 'center' }); form.button.click();
+          } else if (!autofillLogged) {
+            await report(run, 'Авторизация: ожидание автозаполнения логина и пароля браузером.'); autofillLogged = true;
+          }
+        }
+      } else if (crptReady(run)) {
+        if (run.auth || detected) {
+          await report(run, 'Авторизация подтверждена: страница CRPT загружена.');
+          await authCheckpoint(run, null);
+        }
+        return;
+      } else if (run.auth?.attempted && location.pathname !== '/application/integration/crpt' && location.pathname !== run.auth.entryPath && !run.auth.returning && document.readyState === 'complete') {
+        await authCheckpoint(run, { ...run.auth, returning: true });
+        await report(run, 'Авторизация: возврат на страницу CRPT после входа.');
+        check(run); location.assign('https://selsup.ru/application/integration/crpt');
+      }
+      await pause(run, 250);
+    }
+    if (run.auth && !run.auth.attempted) throw Error('Авторизация не выполнена: браузер не подставил логин и пароль или кнопка «Войти» недоступна.');
+    if (run.auth?.attempted) throw Error('После нажатия «Войти» страница CRPT не загрузилась. Проверьте вход в браузере; повторного нажатия не было.');
+    throw Error('Страница CRPT не загрузилась вовремя.');
+  }
   async function execute(run) {
     const heartbeat = setInterval(() => {
       chrome.runtime.sendMessage({ type: 'heartbeat', id: run.id }).then(r => { if (!r?.ok) run.cancelled = true; }).catch(() => { run.cancelled = true; });
     }, 20000);
     try {
+      await ensureAuthorized(run);
       const resumedPass = run.resume?.pass;
       if (resumedPass === undefined) {
         await report(run, 'Страница открыта. Выбор первой организации.');
@@ -250,7 +322,7 @@
     finally { clearInterval(heartbeat); if (active === run) active = null; }
   }
   function begin(message) {
-    active = { id: message.id, settings: message.settings, resume: message.resume || null, cancelled: false };
+    active = { id: message.id, settings: message.settings, resume: message.resume || null, auth: message.auth || null, cancelled: false };
     const run = active;
     void execute(run).then(result => chrome.runtime.sendMessage({ type: 'finished', id: run.id, result })).catch(() => {});
   }
@@ -262,7 +334,7 @@
     }
     if (message.type === 'execute') {
       if (active) { respond({ ok: false, error: 'На странице уже выполняется сценарий.' }); return; }
-      if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt') {
+      if (location.origin !== 'https://selsup.ru') {
         respond({ ok: false, error: 'Неверная страница SelSup.' }); return;
       }
       respond({ ok: true, started: true });
@@ -270,7 +342,7 @@
       return;
     }
   });
-  if (location.origin === 'https://selsup.ru' && location.pathname === '/application/integration/crpt') {
-    void chrome.runtime.sendMessage({ type: 'resume' }).then(message => { if (message?.ok && message.resume && !active) begin(message); }).catch(() => {});
+  if (location.origin === 'https://selsup.ru') {
+    void chrome.runtime.sendMessage({ type: 'resume' }).then(message => { if (message?.ok && (message.resume || message.auth) && !active) begin(message); }).catch(() => {});
   }
 })();

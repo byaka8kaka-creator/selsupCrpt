@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SelSup — ежедневное обновление CRPT",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Обновление токенов двух организаций по расписанию с журналом действий.",
   "permissions": [
     "alarms",
@@ -23,7 +23,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://selsup.ru/application/integration/crpt*"
+        "https://selsup.ru/*"
       ],
       "js": [
         "token.js",
