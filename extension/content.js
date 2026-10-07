@@ -10,6 +10,14 @@
     let found = [...document.querySelectorAll(selector)].filter(el => visible(el) && normalize(el.value || el.textContent || '') === normalize(text));
     return found.filter(el => !found.some(other => other !== el && el.contains(other)));
   }
+  const stepOn = (run, step) => run.settings.stepEnabled?.[step - 1] !== false;
+  function tokenButtonsForStep(run, step) {
+    const found = candidates('ПОЛУЧИТЬ ТОКЕН');
+    if (found.length > 2) throw Error(`Шаг ${step}: найдено больше двух кнопок токена. Задайте CSS-селектор.`);
+    if (found.length === 2) return [found[step - 1]];
+    if (step === 2 && !stepOn(run, 1) && found.length === 1) return found;
+    return [];
+  }
   function check(run) { if (run.cancelled || active !== run) throw Error('Сценарий остановлен.'); }
   async function report(run, message) {
     check(run);
@@ -31,9 +39,7 @@
         try { found = [...document.querySelectorAll(custom.replaceAll('{organization}', CSS.escape(organization || '')))].filter(visible); }
         catch { throw Error(`Шаг ${step}: некорректный CSS-селектор.`); }
       } else if (step === 1 || step === 2) {
-        found = candidates('ПОЛУЧИТЬ ТОКЕН');
-        if (found.length > 2) throw Error(`Шаг ${step}: найдено больше двух кнопок токена. Задайте CSS-селектор.`);
-        found = found.length === 2 ? [found[step - 1]] : [];
+        found = tokenButtonsForStep(run, step);
       } else found = candidates(step === 3 ? 'ПРОВЕРИТЬ СУЗ' : step === 4 ? 'СОХРАНИТЬ' : organization, step === 5);
       if (found.length > 1) throw Error(`Шаг ${step}: несколько подходящих элементов. Задайте CSS-селектор.`);
       if (found.length === 1 && enabled(found[0])) return found[0];
@@ -89,14 +95,17 @@
   }
   function categoryControls(run) {
     if (run.settings.categorySelector) return [...document.querySelectorAll(run.settings.categorySelector)].filter(visible);
-    const tokens = candidates('ПОЛУЧИТЬ ТОКЕН'), checks = candidates('ПРОВЕРИТЬ СУЗ');
-    if (tokens.length !== 2 || checks.length !== 1) return [];
-    const lower = tokens[1], checkButton = checks[0];
+    const lowerButtons = stepOn(run, 2) && run.settings.selectors[1]
+      ? [...document.querySelectorAll(run.settings.selectors[1])].filter(visible) : tokenButtonsForStep(run, 2);
+    const checks = stepOn(run, 3) && run.settings.selectors[2]
+      ? [...document.querySelectorAll(run.settings.selectors[2])].filter(visible) : candidates('ПРОВЕРИТЬ СУЗ');
+    if (lowerButtons.length !== 1) return [];
+    const lower = lowerButtons[0], checkButton = checks.length === 1 ? checks[0] : null;
     let row = lower.parentElement;
-    while (row && !row.contains(checkButton)) row = row.parentElement;
+    if (checkButton) while (row && !row.contains(checkButton)) row = row.parentElement;
     if (!row) return [];
     const controls = [...row.querySelectorAll('select, [role="combobox"], .ant-select, .el-select, .v-select, button, a, [role="button"], [aria-haspopup="listbox"], [aria-haspopup="menu"]')]
-      .filter(el => visible(el) && (lower.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) && (el.compareDocumentPosition(checkButton) & Node.DOCUMENT_POSITION_FOLLOWING));
+      .filter(el => visible(el) && (lower.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) && (!checkButton || (el.compareDocumentPosition(checkButton) & Node.DOCUMENT_POSITION_FOLLOWING)));
     return controls.filter(el => !controls.some(other => other !== el && other.contains(el)));
   }
   async function categoryControl(run) {
@@ -240,11 +249,18 @@
   }
   function crptReady(run) {
     if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt' || document.readyState === 'loading') return false;
-    const tokenButtons = candidates('ПОЛУЧИТЬ ТОКЕН');
     try {
-      return [1, 2, 3].every(step => run.settings.selectors[step - 1]
-        ? [...document.querySelectorAll(run.settings.selectors[step - 1])].some(visible)
-        : step === 3 ? candidates('ПРОВЕРИТЬ СУЗ').length > 0 : tokenButtons.length >= 2);
+      const ready = [1, 2, 3, 4, 5].every(step => {
+        if (!stepOn(run, step)) return true;
+        const selector = run.settings.selectors[step - 1];
+        if (selector) return [...document.querySelectorAll(selector.replaceAll('{organization}', CSS.escape(run.settings.organizations[0])))].some(visible);
+        if (step === 1 || step === 2) {
+          // Leave ambiguous controls to target(), which gives a precise error.
+          return candidates('ПОЛУЧИТЬ ТОКЕН').length > 2 || tokenButtonsForStep(run, step).length > 0;
+        }
+        return candidates(step === 3 ? 'ПРОВЕРИТЬ СУЗ' : step === 4 ? 'СОХРАНИТЬ' : run.settings.organizations[0], step === 5).length > 0;
+      });
+      return ready && ([1, 2, 3, 4, 5].some(step => stepOn(run, step)) || run.settings.categoryEnabled === false || categoryControls(run).length > 0);
     } catch { throw Error('Некорректный CSS-селектор кнопок страницы CRPT.'); }
   }
   async function ensureAuthorized(run) {
@@ -299,21 +315,31 @@
       await ensureAuthorized(run);
       const resumedPass = run.resume?.pass;
       if (resumedPass === undefined) {
-        await report(run, 'Страница открыта. Выбор первой организации.');
-        await click(run, 5, run.settings.organizations[0], 'Подготовка: первая организация');
+        if (stepOn(run, 5)) {
+          await report(run, 'Страница открыта. Выбор первой организации.');
+          await click(run, 5, run.settings.organizations[0], 'Подготовка: первая организация');
+        } else await report(run, 'Переключение организаций выключено: один проход для текущей организации.');
       } else await report(run, 'Продолжение после обновления страницы, без повторного клика верхнего токена.');
-      for (let pass = resumedPass ?? 0; pass < 2; pass++) {
-        if (pass !== resumedPass) {
+      for (let pass = resumedPass ?? 0; pass < (stepOn(run, 5) ? 2 : 1); pass++) {
+        if (pass !== resumedPass && stepOn(run, 1)) {
           await click(run, 1, null, `Проход ${pass+1}, шаг 1 (верхний токен)`, () => checkpoint(run, {
-            pass, clickedAt: Date.now(), beforeTime: tokenStatuses(run)[0]?.time ?? null,
+            pass, clickedAt: Date.now(), beforeTime: run.settings.tokenStatusEnabled === false ? null : tokenStatuses(run)[0]?.time ?? null,
             waitUntil: Date.now() + run.settings.delay * 1000,
             deadline: Date.now() + (run.settings.delay + run.settings.timeout) * 1000
           }));
         }
-        await verifyToken(run);
-        await selectCategory(run);
+        if (!stepOn(run, 1)) await report(run, `Проход ${pass+1}: шаг 1 и проверка верхнего токена пропущены — выключены в настройках.`);
+        else if (run.settings.tokenStatusEnabled !== false) await verifyToken(run);
+        else {
+          await pause(run, Math.max(0, (run.resume?.waitUntil || 0) - Date.now()));
+          await checkpoint(run, null);
+          await report(run, `Проход ${pass+1}: проверка верхнего токена пропущена — выключена в настройках.`);
+        }
+        if (run.settings.categoryEnabled !== false) await selectCategory(run);
+        else await report(run, `Проход ${pass+1}: выбор категории пропущен — выключен в настройках.`);
         for (let step = 2; step <= 5; step++) {
           const names = ['верхний токен', 'нижний токен', 'проверка СУЗ', 'сохранение', 'переключение организации'];
+          if (!stepOn(run, step)) { await report(run, `Проход ${pass+1}, шаг ${step} (${names[step-1]}): пропущен — выключен в настройках.`); continue; }
           await click(run, step, run.settings.organizations[pass === 0 ? 1 : 0], `Проход ${pass+1}, шаг ${step} (${names[step-1]})`);
         }
       }

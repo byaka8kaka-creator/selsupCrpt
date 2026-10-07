@@ -15,7 +15,7 @@ async function schedule() {
 async function finish(id, error) {
   const { run } = await chrome.storage.local.get('run');
   if (run?.id !== id) return;
-  await log(error ? 'error' : 'success', error || 'Завершено: оба прохода выполнены, верхние токены и категория подтверждены, отправлены клики сохранения.');
+  await log(error ? 'error' : 'success', error || 'Завершено: включённые действия выполнены. Подтверждения и пропуски записаны в журнале.');
   await chrome.storage.local.set({ run: null }); await chrome.alarms.clear(WATCH);
 }
 async function execute(run, s) {

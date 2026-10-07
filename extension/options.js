@@ -19,13 +19,31 @@ extraSelectors.forEach(key => $(key).value = s[key]);
 for (const key of ['time', 'delay', 'timeout']) $(key).value = s[key];
 $('enabled').checked = s.enabled; $('org1').value = s.organizations[0]; $('org2').value = s.organizations[1];
 s.selectors.forEach((v, i) => $(`selector${i+1}`).value = v);
+
+const stepInputs = Array.from({ length: 5 }, (_, i) => $(`step${i+1}Enabled`));
+stepInputs.forEach((input, i) => input.checked = s.stepEnabled?.[i] !== false);
+$('categoryEnabled').checked = s.categoryEnabled !== false;
+$('tokenStatusEnabled').checked = s.tokenStatusEnabled !== false;
+function updateSwitches() {
+  stepInputs.forEach((input, i) => $(`selector${i+1}`).disabled = !input.checked);
+  $('tokenStatusEnabled').disabled = !stepInputs[0].checked;
+  $('tokenStatusSelector').disabled = !stepInputs[0].checked || !$('tokenStatusEnabled').checked;
+  for (const id of ['categorySelector', 'categoryOptionSelector']) $(id).disabled = !$('categoryEnabled').checked;
+  for (const id of ['org1', 'org2']) $(id).disabled = !stepInputs[4].checked;
+}
+[...stepInputs, $('categoryEnabled'), $('tokenStatusEnabled')].forEach(input => input.addEventListener('change', updateSwitches));
+updateSwitches();
+
 $('settings').addEventListener('submit', async e => {
   e.preventDefault();
   try {
-    const settings = validate({ enabled: $('enabled').checked, time: $('time').value, delay: Number($('delay').value), timeout: Number($('timeout').value), organizations: [$('org1').value.trim(), $('org2').value.trim()], selectors: Array.from({ length: 5 }, (_, i) => $(`selector${i+1}`).value.trim()) });
+    const settings = validate({ stepEnabled: stepInputs.map(input => input.checked), categoryEnabled: $('categoryEnabled').checked, tokenStatusEnabled: $('tokenStatusEnabled').checked, enabled: $('enabled').checked, time: $('time').value, delay: Number($('delay').value), timeout: Number($('timeout').value), organizations: [$('org1').value.trim(), $('org2').value.trim()], selectors: Array.from({ length: 5 }, (_, i) => $(`selector${i+1}`).value.trim()) });
     extraSelectors.forEach(key => settings[key] = $(key).value.trim());
-    if (settings.selectors[4] && !settings.selectors[4].includes('{organization}')) throw Error('В селекторе шага 5 нужен шаблон {organization}.');
-    for (const selector of [...settings.selectors, ...extraSelectors.map(key => settings[key])]) if (selector) document.querySelector(selector.replaceAll('{organization}', CSS.escape(settings.organizations[0])));
+    if (settings.stepEnabled[4] && settings.selectors[4] && !settings.selectors[4].includes('{organization}')) throw Error('В селекторе шага 5 нужен шаблон {organization}.');
+    const activeSelectors = settings.selectors.filter((_, i) => settings.stepEnabled[i]);
+    if (settings.categoryEnabled) activeSelectors.push(settings.categorySelector, settings.categoryOptionSelector);
+    if (settings.stepEnabled[0] && settings.tokenStatusEnabled) activeSelectors.push(settings.tokenStatusSelector);
+    for (const selector of activeSelectors) if (selector) document.querySelector(selector.replaceAll('{organization}', CSS.escape(settings.organizations[0])));
     await command('save', { settings }); $('status').textContent = 'Настройки сохранены.'; await refresh();
   } catch (e) { showError(e); }
 });
