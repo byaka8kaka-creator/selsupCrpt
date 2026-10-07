@@ -9,16 +9,17 @@ const username='test-account', password='test-password';
 function loginHTML(filled=true) {
   return `<!doctype html><html><head><meta charset="utf-8"></head><body><h1>Авторизация</h1><form method="post" action="${url}">
   <input type="text" autocomplete="username" value="${filled?username:''}"><input type="password" autocomplete="current-password" value="${filled?password:''}">
-  <button type="submit" onclick="sessionStorage.setItem('loginClicks',Number(sessionStorage.getItem('loginClicks')||0)+1)">Войти</button>
+  <button type="submit" onclick="sessionStorage.setItem('loginClicks',Number(sessionStorage.getItem('loginClicks')||0)+1);sessionStorage.setItem('loginClickedAt',Date.now())">Войти</button>
   <button type="button" onclick="sessionStorage.setItem('yandexClicked','yes')">Войти с Яндекс ID</button></form></body></html>`;
 }
 async function harness() {
   const browser=await chromium.launch({executablePath:'/usr/lib/chromium/chromium',headless:true,args:['--no-sandbox']});
   const page=await browser.newPage();
   const settings={...DEFAULTS,delay:1,timeout:10,organizations:['Организация А','Тест FBS']};
-  const state={resume:null,auth:null,started:false}; const messages=[];
+  const state={resume:null,auth:null,started:false}; const messages=[], timings=[];
   await page.exposeFunction('mockMessage', msg=>{
     messages.push(msg);
+    timings.push({time:Date.now(),message:msg.message});
     if(msg.type==='checkpoint')state.resume=msg.resume;
     if(msg.type==='authCheckpoint')state.auth=msg.auth;
     if(msg.type==='resume')return state.started && (state.resume||state.auth) ? {ok:true,id:'login-run',settings,resume:state.resume,auth:state.auth}: {ok:false};
@@ -39,7 +40,14 @@ async function harness() {
     while(!state.result&&Date.now()<end)await new Promise(r=>setTimeout(r,100));
     assert.ok(state.result,'scenario completed');return state.result;
   };
-  return {browser,page,settings,state,messages,start,finished};
+  return {browser,page,settings,state,messages,timings,start,finished};
+}
+
+async function assertLoginDelay(h) {
+  const wait=h.timings.find(m=>m.message?.includes('обязательная пауза 3 секунды'));
+  assert.ok(wait,'mandatory wait is logged');
+  const clickedAt=Number(await h.page.evaluate(()=>sessionStorage.getItem('loginClickedAt')));
+  assert.ok(clickedAt-wait.time>=3000,`Login clicked after ${clickedAt-wait.time} ms`);
 }
 
 test('авторизация: обычный вход из сохранённых полей, перезагрузка и оба прохода', {timeout:40000},async()=>{
@@ -52,6 +60,7 @@ test('авторизация: обычный вход из сохранённы�
     await h.page.goto(url);assert.equal((await h.start()).started,true);
     assert.equal((await h.finished()).ok,true);
     assert.equal(submitted,1);assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('loginClicks')),'1');
+    await assertLoginDelay(h);
     assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('yandexClicked')),null);
     assert.deepEqual(await h.page.evaluate(()=>clicks),sequence);
     assert.equal(h.state.auth,null);
@@ -102,6 +111,7 @@ test('авторизация: браузер показывает пароль, 
       await h.start();const result=await h.finished();
       assert.equal(result.ok,true,result.error);assert.equal(submitted,1);
       assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('loginClicks')),'1');
+      await assertLoginDelay(h);
       assert.deepEqual(await h.page.evaluate(()=>clicks),['2']);
       assert.equal(h.messages.some(m=>m.message?.includes('автозаполнение недоступно для проверки JavaScript')),mode!=='autofill');
       const persisted=JSON.stringify({state:h.state,messages:h.messages});
@@ -122,6 +132,7 @@ test('авторизация: ожидание позднего автозапо
     assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('loginClicks')),null);
     await h.page.locator('input[type=text]').fill(username);await h.page.locator('input[type=password]').fill(password);
     await h.page.waitForFunction(()=>sessionStorage.getItem('loginClicks')==='1');
+    await assertLoginDelay(h);
     await h.page.setContent(fixture);
     assert.equal((await h.finished()).ok,true);assert.deepEqual(await h.page.evaluate(()=>clicks),sequence);
     assert.equal(h.state.auth,null);assert.ok(h.messages.some(m=>m.message?.includes('ожидание автозаполнения')));

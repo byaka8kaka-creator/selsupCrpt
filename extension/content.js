@@ -273,7 +273,7 @@
   }
   async function ensureAuthorized(run) {
     const deadline = run.auth?.deadline ?? Date.now() + run.settings.timeout * 1000;
-    let detected = false, autofillLogged = false, autofillWaitUntil = null;
+    let detected = false, autofillWaitUntil = null;
     while (Date.now() <= deadline) {
       check(run);
       const form = loginForm();
@@ -287,10 +287,13 @@
           // Values and autofill markers are hints, never a prerequisite to
           // pressing Login: the browser may conceal a painted saved password.
           // Credential values never enter messages, logs, settings or storage.
+          if (autofillWaitUntil === null) {
+            await report(run, 'Авторизация: ожидание автозаполнения — обязательная пауза 3 секунды перед нажатием «Войти».');
+            autofillWaitUntil = Date.now() + 3000;
+          }
           const usernames = [...form.root.querySelectorAll('input')].filter(el => visible(el) && ['text','email','tel'].includes(el.type));
-          if (autofillWaitUntil === null) autofillWaitUntil = Date.now() + 3000;
-          const filled = appearsFilled(form.password) && usernames.some(appearsFilled);
-          if (usernames.length && (filled || Date.now() >= autofillWaitUntil)) {
+          if (usernames.length && Date.now() >= autofillWaitUntil) {
+            const filled = appearsFilled(form.password) && usernames.some(appearsFilled);
             await authCheckpoint(run, { ...run.auth, attempted: true });
             await report(run, filled
               ? 'Авторизация: нажатие кнопки «Войти» с данными, подставленными браузером.'
@@ -298,8 +301,6 @@
             check(run);
             if (!form.button.isConnected || !visible(form.button) || !enabled(form.button)) throw Error('Форма входа изменилась перед нажатием. Повторите запуск после проверки страницы.');
             form.button.scrollIntoView({ block: 'center' }); form.button.click();
-          } else if (!autofillLogged) {
-            await report(run, 'Авторизация: ожидание автозаполнения логина и пароля браузером.'); autofillLogged = true;
           }
         }
       } else if (crptReady(run)) {
