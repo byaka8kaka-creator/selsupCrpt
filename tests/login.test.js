@@ -60,7 +60,7 @@ test('авторизация: обычный вход из сохранённы�
   }finally{await h.browser.close();}
 });
 
-test('авторизация: пустое автозаполнение и неудачный вход не вызывают повторных кликов', {timeout:30000},async()=>{
+test('авторизация: пустое автозаполнение и неудачный вход допускают только одно нажатие', {timeout:30000},async()=>{
   for(const filled of [false,true]){
     const h=await harness();let submitted=0;
     try{
@@ -69,10 +69,44 @@ test('авторизация: пустое автозаполнение и не�
         await route.fulfill({contentType:'text/html; charset=utf-8',body:loginHTML(filled)});
       });
       await h.page.goto(url);await h.start();const result=await h.finished();
-      assert.equal(result.ok,false);assert.equal(submitted,filled?1:0);
-      assert.match(result.error,filled?/повторного нажатия не было/:/не подставил логин и пароль/);
+      assert.equal(result.ok,false);assert.equal(submitted,1);
+      assert.match(result.error,/повторного нажатия не было/);
       assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('yandexClicked')),null);
     }finally{await h.browser.close();}
+  }
+});
+
+test('авторизация: браузер показывает пароль, но JS видит пустые значения', {timeout:25000},async()=>{
+  for (const mode of ['password','both','autofill']) {
+    const h=await harness();let submitted=0;
+    // Keep this regression focused on signing in and continuing the enabled
+    // action, including the layout where the upper token is disabled.
+    h.settings.stepEnabled=[false,true,false,false,false];h.settings.categoryEnabled=false;
+    try {
+      await h.page.route('https://selsup.ru/**',async route=>{
+        if(route.request().method()==='POST')submitted++;
+        await route.fulfill({contentType:'text/html; charset=utf-8',body:submitted?fixture:loginHTML()});
+      });
+      await h.page.goto(url);
+      await h.page.locator('input[type=password]').evaluate(input=>Object.defineProperty(input,'value',{get(){return ''}}));
+      if(mode==='both')await h.page.locator('input[type=text]').evaluate(input=>Object.defineProperty(input,'value',{get(){return ''}}));
+      assert.equal(await h.page.locator('input[type=password]').evaluate(input=>input.value),'');
+      if(mode==='autofill') {
+        const session=await h.page.context().newCDPSession(h.page);
+        await session.send('DOM.enable');await session.send('CSS.enable');
+        const {root}=await session.send('DOM.getDocument');
+        const {nodeId}=await session.send('DOM.querySelector',{nodeId:root.nodeId,selector:'input[type=password]'});
+        await session.send('CSS.forcePseudoState',{nodeId,forcedPseudoClasses:['autofill']});
+        assert.equal(await h.page.locator('input[type=password]').evaluate(input=>input.matches(':autofill')),true);
+      }
+      await h.start();const result=await h.finished();
+      assert.equal(result.ok,true,result.error);assert.equal(submitted,1);
+      assert.equal(await h.page.evaluate(()=>sessionStorage.getItem('loginClicks')),'1');
+      assert.deepEqual(await h.page.evaluate(()=>clicks),['2']);
+      assert.equal(h.messages.some(m=>m.message?.includes('автозаполнение недоступно для проверки JavaScript')),mode!=='autofill');
+      const persisted=JSON.stringify({state:h.state,messages:h.messages});
+      assert.equal(persisted.includes(username),false);assert.equal(persisted.includes(password),false);
+    } finally {await h.browser.close();}
   }
 });
 

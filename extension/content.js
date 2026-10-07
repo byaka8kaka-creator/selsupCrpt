@@ -247,6 +247,14 @@
     if (pairs.length > 1) throw Error('Несколько форм авторизации. Нельзя однозначно выбрать кнопку «Войти».');
     return pairs[0] || null;
   }
+  function appearsFilled(input) {
+    if (input.value.length > 0) return true;
+    // Chromium can paint a saved password before exposing its value to JS.
+    for (const selector of [':autofill', ':-webkit-autofill']) {
+      try { if (input.matches(selector)) return true; } catch { /* Unsupported pseudo-class. */ }
+    }
+    return false;
+  }
   function crptReady(run) {
     if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt' || document.readyState === 'loading') return false;
     try {
@@ -265,7 +273,7 @@
   }
   async function ensureAuthorized(run) {
     const deadline = run.auth?.deadline ?? Date.now() + run.settings.timeout * 1000;
-    let detected = false, autofillLogged = false;
+    let detected = false, autofillLogged = false, autofillWaitUntil = null;
     while (Date.now() <= deadline) {
       check(run);
       const form = loginForm();
@@ -276,13 +284,17 @@
         }
         detected = true;
         if (!run.auth.attempted && enabled(form.button)) {
-          // Only presence is checked. Credential values never enter messages,
-          // logs, settings, or extension storage; the browser fills the form.
+          // Values and autofill markers are hints, never a prerequisite to
+          // pressing Login: the browser may conceal a painted saved password.
+          // Credential values never enter messages, logs, settings or storage.
           const usernames = [...form.root.querySelectorAll('input')].filter(el => visible(el) && ['text','email','tel'].includes(el.type));
-          const filled = form.password.value.length > 0 && usernames.some(el => el.value.trim().length > 0);
-          if (filled) {
+          if (autofillWaitUntil === null) autofillWaitUntil = Date.now() + 3000;
+          const filled = appearsFilled(form.password) && usernames.some(appearsFilled);
+          if (usernames.length && (filled || Date.now() >= autofillWaitUntil)) {
             await authCheckpoint(run, { ...run.auth, attempted: true });
-            await report(run, 'Авторизация: нажатие кнопки «Войти» с данными, подставленными браузером.');
+            await report(run, filled
+              ? 'Авторизация: нажатие кнопки «Войти» с данными, подставленными браузером.'
+              : 'Авторизация: автозаполнение недоступно для проверки JavaScript. Однократное нажатие «Войти» после ожидания браузера.');
             check(run);
             if (!form.button.isConnected || !visible(form.button) || !enabled(form.button)) throw Error('Форма входа изменилась перед нажатием. Повторите запуск после проверки страницы.');
             form.button.scrollIntoView({ block: 'center' }); form.button.click();
@@ -303,7 +315,7 @@
       }
       await pause(run, 250);
     }
-    if (run.auth && !run.auth.attempted) throw Error('Авторизация не выполнена: браузер не подставил логин и пароль или кнопка «Войти» недоступна.');
+    if (run.auth && !run.auth.attempted) throw Error('Авторизация не выполнена: поля формы или кнопка «Войти» недоступны.');
     if (run.auth?.attempted) throw Error('После нажатия «Войти» страница CRPT не загрузилась. Проверьте вход в браузере; повторного нажатия не было.');
     throw Error('Страница CRPT не загрузилась вовремя.');
   }
