@@ -268,21 +268,22 @@
     }
     return null;
   }
+  async function trustedLoginClick(run, el, action) {
+    check(run);
+    const token = crypto.randomUUID();
+    el.setAttribute('data-selsup-auth-click', token);
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'authClick', id: run.id, action, token });
+      if (!response?.ok) throw Error(response?.error || 'Нет ответа chrome.debugger при авторизации.');
+    } finally {
+      if (el.getAttribute('data-selsup-auth-click') === token) el.removeAttribute('data-selsup-auth-click');
+    }
+  }
   async function prepareLogin(run, form) {
     const heading = loginHeading(form);
     if (heading) {
-      await report(run, 'Авторизация: клик по надписи «Авторизация» перед входом.');
-      check(run);
-      heading.scrollIntoView({ block: 'center' });
-      const rect = heading.getBoundingClientRect();
-      const mouse = { bubbles: true, cancelable: true, view: window, button: 0, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 };
-      heading.dispatchEvent(new PointerEvent('pointerdown', { ...mouse, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      heading.dispatchEvent(new MouseEvent('mousedown', { ...mouse, buttons: 1 }));
-      // A synthetic mousedown doesn't perform the browser's default blur.
-      if (form.root.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) document.activeElement.blur();
-      heading.dispatchEvent(new PointerEvent('pointerup', { ...mouse, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      heading.dispatchEvent(new MouseEvent('mouseup', mouse));
-      heading.click();
+      await report(run, 'Авторизация: доверенный клик по надписи «Авторизация» через chrome.debugger.');
+      await trustedLoginClick(run, heading, 'heading');
     } else {
       await report(run, 'Авторизация: надпись «Авторизация» не найдена. Подготовка полей без клика.');
       if (form.root.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) document.activeElement.blur();
@@ -347,11 +348,11 @@
             const filled = appearsFilled(form.password) && usernames.some(appearsFilled);
             await authCheckpoint(run, { ...run.auth, attempted: true });
             await report(run, filled
-              ? 'Авторизация: нажатие кнопки «Войти» с данными, подставленными браузером.'
-              : 'Авторизация: автозаполнение недоступно для проверки JavaScript. Однократное нажатие «Войти» после ожидания браузера.');
+              ? 'Авторизация: доверенное нажатие «Войти» через chrome.debugger с данными браузера.'
+              : 'Авторизация: автозаполнение недоступно для проверки JavaScript. Однократное доверенное нажатие «Войти» через chrome.debugger.');
             check(run);
             if (!form.button.isConnected || !visible(form.button) || !enabled(form.button)) throw Error('Форма входа изменилась перед нажатием. Повторите запуск после проверки страницы.');
-            form.button.scrollIntoView({ block: 'center' }); form.button.click();
+            await trustedLoginClick(run, form.button, 'login');
           }
         }
       } else if (crptReady(run)) {

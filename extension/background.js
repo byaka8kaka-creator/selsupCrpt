@@ -1,6 +1,8 @@
 import { DEFAULTS, URL, validate, nextRun, dayKey } from './common.js';
+import { clickAuthTarget } from './auth-debugger.js';
 const DAILY = 'daily', WATCH = 'watchdog';
 let gate = Promise.resolve();
+let authStopVersion = 0;
 function exclusive(fn) { const task = gate.then(fn); gate = task.catch(() => {}); return task; }
 async function log(level, message) {
   const { logs = [] } = await chrome.storage.local.get('logs');
@@ -54,6 +56,35 @@ async function start(source) {
   void execute(run, s);
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message.type === 'stop' && sender.id === chrome.runtime.id && !sender.tab) authStopVersion++;
+  if (message.type === 'authClick') {
+    // Reserve once under the gate, then release it so Stop can cancel while
+    // debugger APIs are pending. Recheck the run/origin before each operation.
+    const validSender = () => sender.id === chrome.runtime.id && sender.tab
+      && sender.frameId === 0 && /^https:\/\/selsup\.ru(?:\/|$)/.test(sender.url || '');
+    const stopVersion = authStopVersion;
+    const assertActive = async () => {
+      if (stopVersion !== authStopVersion) throw Error('Клик авторизации остановлен пользователем.');
+      const { run } = await chrome.storage.local.get('run');
+      if (!validSender() || run?.id !== message.id || run.tabId !== sender.tab.id || !run.auth || Date.now() > run.auth.deadline) throw Error('Клик авторизации отменён или запуск завершён.');
+      const tab = await chrome.tabs.get(run.tabId);
+      if (stopVersion !== authStopVersion) throw Error('Клик авторизации остановлен пользователем.');
+      if (!/^https:\/\/selsup\.ru(?:\/|$)/.test(tab.url || '')) throw Error('Клик вне SelSup запрещён.');
+      if ((message.action === 'login') !== run.auth.attempted) throw Error('Этап авторизации изменился.');
+      return run;
+    };
+    exclusive(async () => {
+      if (!['heading', 'login'].includes(message.action) || !/^[a-f0-9-]{36}$/.test(message.token || '')) throw Error('Недопустимая цель авторизации.');
+      const run = await assertActive();
+      if (run.authClicks?.[message.action]) throw Error('Повторный клик авторизации запрещён.');
+      run.authClicks = { ...run.authClicks, [message.action]: true };
+      run.heartbeat = Date.now(); await chrome.storage.local.set({ run });
+      return run.tabId;
+    }).then(tabId => clickAuthTarget({ api: chrome, tabId, token: message.token, action: message.action, assertActive,
+      detachWarning: () => exclusive(() => log('warning', 'Авторизация: chrome.debugger не подтвердил отключение. Вкладка могла закрыться или отладчик был отключён пользователем.'))
+    })).then(() => respond({ ok: true }), e => respond({ ok: false, error: `Авторизация через chrome.debugger: ${e.message}` }));
+    return true;
+  }
   exclusive(async () => {
     if (sender.tab) {
       const { run } = await chrome.storage.local.get('run');

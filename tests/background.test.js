@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { DEFAULTS, URL, validate, nextRun, dayKey } from '../extension/common.js';
+import { clickAuthTarget } from '../extension/auth-debugger.js';
 
 test('service worker: расписание, взаимная блокировка, журнал, остановка и восстановление', async () => {
   const data={}, alarms=new Map(), events={}; 
@@ -14,8 +15,8 @@ test('service worker: расписание, взаимная блокировк�
     tabs:{async create(){return {id:1,url:URL,status:'complete'}},async get(){return {id:1,url:URL,status:'complete'}},async sendMessage(id,msg){if(msg.type==='execute')return {ok:true,started:true};return {ok:true}}},
     scripting:{async executeScript(){}}
   };
-  const source=(await readFile('extension/background.js','utf8')).replace(/^import .*?;\n/,'');
-  vm.runInNewContext(source,{chrome,DEFAULTS,URL,validate,nextRun,dayKey,crypto,setTimeout,Date,Promise,Error});
+  const source=(await readFile('extension/background.js','utf8')).replace(/^import .*?;\n/gm,'');
+  vm.runInNewContext(source,{chrome,DEFAULTS,URL,validate,nextRun,dayKey,clickAuthTarget,crypto,setTimeout,Date,Promise,Error});
   const command=(type,extra={},sender={id:'test'})=>new Promise(r=>events.message({type,...extra},sender,r));
   const settle=()=>new Promise(r=>setTimeout(r,20));
   assert.equal((await command('save',{settings:{...DEFAULTS,enabled:true}})).ok,true);
