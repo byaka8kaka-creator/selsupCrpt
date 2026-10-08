@@ -50,6 +50,60 @@ async function assertLoginDelay(h) {
   assert.ok(clickedAt-wait.time>=3000,`Login clicked after ${clickedAt-wait.time} ms`);
 }
 
+test('авторизация: клик по заголовку и синхронизация заполненных полей; остановка до отправки', {timeout:25000},async()=>{
+  for (const cancel of [false,true]) {
+    const h=await harness();let submitted=0;
+    h.settings.stepEnabled=[false,true,false,false,false];h.settings.categoryEnabled=false;
+    try {
+      await h.page.route('https://selsup.ru/**',async route=>{
+        if(route.request().method()==='POST')submitted++;
+        await route.fulfill({contentType:'text/html; charset=utf-8',body:submitted?fixture:loginHTML()});
+      });
+      await h.page.goto(url);
+      await h.page.evaluate(()=>{
+        const form=document.querySelector('form'), heading=document.querySelector('h1');
+        const inputs=[...form.querySelectorAll('input')];
+        const model=new Map(inputs.map(input=>[input,'']));
+        const actions=[];
+        const record=action=>{actions.push({action,time:Date.now()});sessionStorage.setItem('formActions',JSON.stringify(actions));};
+        heading.addEventListener('click',()=>record('heading'));
+        for(const input of inputs) {
+          input.addEventListener('blur',()=>record('blur'));
+          for(const type of ['input','change'])input.addEventListener(type,()=>{model.set(input,input.value);record(type);});
+        }
+        form.addEventListener('submit',e=>{
+          record('submit');
+          if(inputs.some(input=>!model.get(input))){e.preventDefault();record('empty-model');}
+        });
+        inputs[0].focus(); // Filled DOM values, but the site's model is still empty.
+      });
+      await h.start();
+      if(cancel) {
+        await h.page.waitForFunction(()=>JSON.parse(sessionStorage.getItem('formActions')||'[]').some(a=>a.action==='heading'));
+        await h.page.evaluate(()=>dispatch({type:'stop',id:'login-run'}));
+      }
+      const result=await h.finished();
+      assert.equal(result.ok,!cancel,result.error);assert.equal(submitted,cancel?0:1);
+      const actions=await h.page.evaluate(()=>JSON.parse(sessionStorage.getItem('formActions')||'[]'));
+      const heading=actions.filter(a=>a.action==='heading');assert.equal(heading.length,1);
+      const wait=h.timings.find(m=>m.message?.includes('обязательная пауза 3 секунды'));
+      assert.ok(heading[0].time-wait.time>=3000,'heading click follows mandatory delay');
+      assert.ok(actions.some(a=>a.action==='blur'),'focused login field is blurred');
+      assert.equal(actions.some(a=>a.action==='empty-model'),false,'form receives filled values before submission');
+      if(cancel)assert.equal(actions.some(a=>a.action==='submit'),false);
+      else {
+        await assertLoginDelay(h);
+        assert.ok(actions.some(a=>a.action==='input'));assert.ok(actions.some(a=>a.action==='change'));
+        const submit=actions.find(a=>a.action==='submit');
+        assert.ok(submit.time-heading[0].time>=1000,'site can react to heading click and form events before Login');
+        assert.deepEqual(await h.page.evaluate(()=>clicks),['2']);
+      }
+      const persisted=JSON.stringify({state:h.state,messages:h.messages});
+      assert.equal(persisted.includes(username),false);assert.equal(persisted.includes(password),false);
+    }finally{await h.browser.close();}
+  }
+});
+
 test('авторизация: обычный вход из сохранённых полей, перезагрузка и оба прохода', {timeout:40000},async()=>{
   const h=await harness();let submitted=0;
   try {

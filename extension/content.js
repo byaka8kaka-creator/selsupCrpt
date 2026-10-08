@@ -255,6 +255,52 @@
     }
     return false;
   }
+  function loginHeading(form) {
+    for (let root = form.root; root; root = root.parentElement) {
+      for (const selector of ['h1, h2, h3, h4, [role="heading"]', 'p, div, span']) {
+        const found = [...root.querySelectorAll(selector)].filter(el => visible(el)
+          && normalize(el.textContent || '') === 'АВТОРИЗАЦИЯ'
+          && !el.closest('a, button, [role="button"], [role="link"], [contenteditable="true"]'));
+        const leaves = found.filter(el => !found.some(other => other !== el && el.contains(other)));
+        if (leaves.length > 1) throw Error('Несколько надписей «Авторизация». Нельзя однозначно выбрать место клика.');
+        if (leaves.length === 1) return leaves[0];
+      }
+    }
+    return null;
+  }
+  async function prepareLogin(run, form) {
+    const heading = loginHeading(form);
+    if (heading) {
+      await report(run, 'Авторизация: клик по надписи «Авторизация» перед входом.');
+      check(run);
+      heading.scrollIntoView({ block: 'center' });
+      const rect = heading.getBoundingClientRect();
+      const mouse = { bubbles: true, cancelable: true, view: window, button: 0, clientX: rect.x + rect.width / 2, clientY: rect.y + rect.height / 2 };
+      heading.dispatchEvent(new PointerEvent('pointerdown', { ...mouse, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      heading.dispatchEvent(new MouseEvent('mousedown', { ...mouse, buttons: 1 }));
+      // A synthetic mousedown doesn't perform the browser's default blur.
+      if (form.root.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) document.activeElement.blur();
+      heading.dispatchEvent(new PointerEvent('pointerup', { ...mouse, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      heading.dispatchEvent(new MouseEvent('mouseup', mouse));
+      heading.click();
+    } else {
+      await report(run, 'Авторизация: надпись «Авторизация» не найдена. Подготовка полей без клика.');
+      if (form.root.contains(document.activeElement) && document.activeElement.matches('input, textarea, select')) document.activeElement.blur();
+    }
+    await pause(run, 500);
+    const current = loginForm();
+    if (!current) return;
+    await report(run, 'Авторизация: уведомление формы об автозаполнении, пауза перед входом.');
+    const inputs = [...current.root.querySelectorAll('input')].filter(el => visible(el) && ['text', 'email', 'tel', 'password'].includes(el.type));
+    for (const input of inputs) {
+      check(run);
+      // Notify the site's form model without assigning or copying credentials.
+      if (!input.value.length) continue;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    await pause(run, 500);
+  }
   function crptReady(run) {
     if (location.origin !== 'https://selsup.ru' || location.pathname !== '/application/integration/crpt' || document.readyState === 'loading') return false;
     try {
@@ -273,7 +319,7 @@
   }
   async function ensureAuthorized(run) {
     const deadline = run.auth?.deadline ?? Date.now() + run.settings.timeout * 1000;
-    let detected = false, autofillWaitUntil = null;
+    let detected = false, autofillWaitUntil = null, prepared = false;
     while (Date.now() <= deadline) {
       check(run);
       const form = loginForm();
@@ -293,6 +339,11 @@
           }
           const usernames = [...form.root.querySelectorAll('input')].filter(el => visible(el) && ['text','email','tel'].includes(el.type));
           if (usernames.length && Date.now() >= autofillWaitUntil) {
+            if (!prepared) {
+              await prepareLogin(run, form);
+              prepared = true;
+              continue; // Re-read the form after blur/events and possible re-render.
+            }
             const filled = appearsFilled(form.password) && usernames.some(appearsFilled);
             await authCheckpoint(run, { ...run.auth, attempted: true });
             await report(run, filled
