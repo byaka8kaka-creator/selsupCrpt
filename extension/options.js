@@ -9,14 +9,14 @@ async function refresh() {
   const { logs = [], run } = await chrome.storage.local.get(['logs', 'run']);
   $('logs').textContent = logs.map(l => `${new Date(l.time).toLocaleString()} [${l.level}] ${l.message}`).join('\n') || 'Действий пока нет.';
   $('run').disabled = !!run; $('stop').disabled = !run;
-  const alarm = await chrome.alarms.get('daily');
-  $('next').textContent = run ? 'Сценарий выполняется.' : alarm ? `Следующий запуск: ${new Date(alarm.scheduledTime).toLocaleString()}` : 'Автоматический запуск выключен.';
+  const alarms = (await Promise.all(['daily', 'daily2'].map(name => chrome.alarms.get(name)))).filter(Boolean).sort((a, b) => a.scheduledTime - b.scheduledTime);
+  $('next').textContent = run ? 'Сценарий выполняется.' : alarms.length ? `Следующие запуски: ${alarms.map(alarm => new Date(alarm.scheduledTime).toLocaleString()).join('; ')}` : 'Автоматический запуск выключен.';
 }
 const { settings } = await chrome.storage.local.get('settings');
 const s = { ...DEFAULTS, ...settings };
 const extraSelectors = ['categorySelector', 'categoryOptionSelector', 'tokenStatusSelector'];
 extraSelectors.forEach(key => $(key).value = s[key]);
-for (const key of ['time', 'delay', 'timeout']) $(key).value = s[key];
+for (const key of ['time', 'time2', 'delay', 'timeout']) $(key).value = s[key];
 $('enabled').checked = s.enabled; $('org1').value = s.organizations[0]; $('org2').value = s.organizations[1];
 s.selectors.forEach((v, i) => $(`selector${i+1}`).value = v);
 
@@ -37,7 +37,7 @@ updateSwitches();
 $('settings').addEventListener('submit', async e => {
   e.preventDefault();
   try {
-    const settings = validate({ stepEnabled: stepInputs.map(input => input.checked), categoryEnabled: $('categoryEnabled').checked, tokenStatusEnabled: $('tokenStatusEnabled').checked, enabled: $('enabled').checked, time: $('time').value, delay: Number($('delay').value), timeout: Number($('timeout').value), organizations: [$('org1').value.trim(), $('org2').value.trim()], selectors: Array.from({ length: 5 }, (_, i) => $(`selector${i+1}`).value.trim()) });
+    const settings = validate({ stepEnabled: stepInputs.map(input => input.checked), categoryEnabled: $('categoryEnabled').checked, tokenStatusEnabled: $('tokenStatusEnabled').checked, enabled: $('enabled').checked, time: $('time').value, time2: $('time2').value, delay: Number($('delay').value), timeout: Number($('timeout').value), organizations: [$('org1').value.trim(), $('org2').value.trim()], selectors: Array.from({ length: 5 }, (_, i) => $(`selector${i+1}`).value.trim()) });
     extraSelectors.forEach(key => settings[key] = $(key).value.trim());
     if (settings.stepEnabled[4] && settings.selectors[4] && !settings.selectors[4].includes('{organization}')) throw Error('В селекторе шага 5 нужен шаблон {organization}.');
     const activeSelectors = settings.selectors.filter((_, i) => settings.stepEnabled[i]);

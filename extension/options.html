@@ -3,7 +3,8 @@
 <body><main><h1>SelSup · CRPT</h1><p>Ежедневное обновление токенов двух организаций</p>
 <form id="settings">
 <label class="check"><input id="enabled" type="checkbox"> Включить ежедневный запуск</label>
-<label>Время на этом компьютере<input id="time" type="time" required></label>
+<div class="row"><label>Первый запуск<input id="time" type="time" required></label><label>Второй запуск<input id="time2" type="time"></label></div>
+<p class="note">Время на этом компьютере. Оставьте второе время пустым для одного запуска в день. Если предыдущий сценарий ещё выполняется, следующий плановый запуск пропускается.</p>
 <div class="row"><label>Пауза после клика, сек.<input id="delay" type="number" min="1" max="60" required></label><label>Ожидание кнопки, сек.<input id="timeout" type="number" min="10" max="180" required></label></div>
 <label>Первая организация<input id="org1" required></label><label>Вторая организация<input id="org2" required></label>
 <fieldset><legend>Включённые действия</legend>

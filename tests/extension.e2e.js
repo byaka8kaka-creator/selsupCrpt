@@ -61,7 +61,8 @@ test('реальное расширение Chromium: настройки, 2 пр
     await command('save', { settings: { ...DEFAULTS, enabled:true, organizations:['Организация А','Тест FBS'] } });
     await worker.evaluate(async () => {
       const date = new Date(); const key = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-      await chrome.storage.local.set({ lastScheduledDay:key });
+      const {settings}=await chrome.storage.local.get('settings');
+      await chrome.storage.local.set({ lastScheduledDay:key, lastScheduledRuns:{[settings.time]:key} });
       await chrome.alarms.create('daily', { when:Date.now()+100 });
     });
     await ui.waitForFunction(async () => (await chrome.alarms.get('daily'))?.scheduledTime > Date.now() + 60000);

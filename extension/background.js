@@ -1,6 +1,6 @@
 import { DEFAULTS, URL, validate, nextRun, dayKey } from './common.js';
 import { clickAuthTarget } from './auth-debugger.js';
-const DAILY = 'daily', WATCH = 'watchdog';
+const DAILY = 'daily', SECOND = 'daily2', WATCH = 'watchdog';
 let gate = Promise.resolve();
 let authStopVersion = 0;
 function exclusive(fn) { const task = gate.then(fn); gate = task.catch(() => {}); return task; }
@@ -11,8 +11,12 @@ async function log(level, message) {
 }
 async function settings() { const { settings } = await chrome.storage.local.get('settings'); return validate({ ...DEFAULTS, ...settings }); }
 async function schedule() {
-  const s = await settings(); await chrome.alarms.clear(DAILY);
-  if (s.enabled) await chrome.alarms.create(DAILY, { when: nextRun(s.time) });
+  const s = await settings();
+  await chrome.alarms.clear(DAILY); await chrome.alarms.clear(SECOND);
+  if (s.enabled) {
+    await chrome.alarms.create(DAILY, { when: nextRun(s.time) });
+    if (s.time2) await chrome.alarms.create(SECOND, { when: nextRun(s.time2) });
+  }
 }
 async function finish(id, error) {
   const { run } = await chrome.storage.local.get('run');
@@ -44,15 +48,29 @@ async function execute(run, s) {
     if (!result?.ok || !result.started) throw Error(result?.error || 'Сценарий не запущен на странице.');
   } catch (e) { await exclusive(() => finish(run.id, `Запуск остановлен: ${e.message}`)); }
 }
-async function start(source) {
+async function start(source, slot = DAILY) {
   const s = await settings();
-  const { run: current, lastScheduledDay } = await chrome.storage.local.get(['run', 'lastScheduledDay']);
+  const { run: current, lastScheduledDay, lastScheduledRuns } = await chrome.storage.local.get(['run', 'lastScheduledDay', 'lastScheduledRuns']);
+  const plannedTime = slot === SECOND ? s.time2 : s.time;
+  if (source === 'schedule') {
+    // Migrate the old single-time marker to the first time only. Each distinct
+    // time can run once per local day, including after a service-worker restart.
+    const marks = lastScheduledRuns ?? (lastScheduledDay ? { [s.time]: lastScheduledDay } : {});
+    const today = dayKey();
+    if (!s.enabled || !plannedTime || marks[plannedTime] === today) return;
+    const nextMarks = Object.fromEntries(Object.entries(marks).filter(([, day]) => day === today));
+    nextMarks[plannedTime] = today;
+    await chrome.storage.local.set({ lastScheduledRuns: nextMarks, ...(slot === DAILY ? { lastScheduledDay: today } : {}) });
+    if (current) {
+      await log('info', `Запуск по расписанию ${plannedTime} пропущен: сценарий уже выполняется.`);
+      return;
+    }
+  }
   if (current) throw Error('Сценарий уже выполняется.');
-  if (source === 'schedule' && (!s.enabled || lastScheduledDay === dayKey())) return;
   const run = { id: crypto.randomUUID(), heartbeat: Date.now(), tabId: null, settings: s, resume: null, auth: null };
-  await chrome.storage.local.set({ run, ...(source === 'schedule' ? { lastScheduledDay: dayKey() } : {}) });
+  await chrome.storage.local.set({ run });
   await chrome.alarms.create(WATCH, { periodInMinutes: 1 });
-  await log('info', `Запуск: ${source === 'schedule' ? 'по расписанию' : 'вручную'}.`);
+  await log('info', `Запуск: ${source === 'schedule' ? `по расписанию (${plannedTime}, ${slot === SECOND ? 'второй' : 'первый'} запуск)` : 'вручную'}.`);
   void execute(run, s);
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
@@ -134,7 +152,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 chrome.alarms.onAlarm.addListener(alarm => {
   void exclusive(async () => {
-    if (alarm.name === DAILY) { await schedule(); await start('schedule'); }
+    if (alarm.name === DAILY || alarm.name === SECOND) { await schedule(); await start('schedule', alarm.name); }
     if (alarm.name === WATCH) {
       const { run } = await chrome.storage.local.get('run');
       if (run && Date.now() - run.heartbeat > 90000) {

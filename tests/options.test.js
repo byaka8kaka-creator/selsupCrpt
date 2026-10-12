@@ -13,9 +13,9 @@ test('Chromium: переключатели сохраняются, отключ�
       const name=new URL(route.request().url()).pathname.slice(1);
       return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html; charset=utf-8',body:files.get(name)||''});
     });
-    const legacy={...DEFAULTS};delete legacy.stepEnabled;delete legacy.categoryEnabled;delete legacy.tokenStatusEnabled;
+    const legacy={...DEFAULTS};delete legacy.stepEnabled;delete legacy.categoryEnabled;delete legacy.tokenStatusEnabled;delete legacy.time2;
     await page.addInitScript(legacy=>{
-      window.chrome={storage:{local:{async get(){return {settings:JSON.parse(localStorage.getItem('settings'))||legacy}}},onChanged:{addListener(){}}},alarms:{async get(){}},runtime:{async sendMessage(msg){if(msg.type==='save')localStorage.setItem('settings',JSON.stringify(msg.settings));return {ok:true}}}};
+      window.chrome={storage:{local:{async get(){return {settings:JSON.parse(localStorage.getItem('settings'))||legacy}}},onChanged:{addListener(){}}},alarms:{async get(name){const s=JSON.parse(localStorage.getItem('settings'))||legacy;if(!s.enabled||(name==='daily2'&&!s.time2))return undefined;return {name,scheduledTime:Date.now()+(name==='daily'?60000:120000)}}},runtime:{async sendMessage(msg){if(msg.type==='save')localStorage.setItem('settings',JSON.stringify(msg.settings));return {ok:true}}}};
     },legacy);
     const ready=async()=>page.waitForFunction(()=>document.querySelector('#logs').textContent==='Действий пока нет.');
     const save=async()=>{
@@ -26,6 +26,16 @@ test('Chromium: переключатели сохраняются, отключ�
     };
     await page.goto('http://127.0.0.1:32123/options.html');await ready();
     assert.equal(await page.locator('#step1Enabled').isChecked(),true);
+    assert.equal(await page.locator('#time2').inputValue(),'','old settings keep one daily time');
+    await page.locator('#enabled').check();await page.locator('#time2').fill('19:00');
+    assert.equal(await save(),'Настройки сохранены.');
+    assert.match(await page.locator('#next').textContent(),/; /,'both future alarms are displayed');
+    await page.reload();await ready();assert.equal(await page.locator('#time2').inputValue(),'19:00');
+    await page.locator('#time2').fill(await page.locator('#time').inputValue());
+    assert.equal(await save(),'Укажите два разных времени запуска.');
+    await page.locator('#time2').fill('');assert.equal(await save(),'Настройки сохранены.');
+    assert.doesNotMatch(await page.locator('#next').textContent(),/; /,'clearing second time removes second next-run entry');
+    await page.reload();await ready();assert.equal(await page.locator('#time2').inputValue(),'');
     await page.locator('details').evaluate(n=>n.open=true);
     await page.locator('#selector1').fill('[');await page.locator('#tokenStatusSelector').fill('[');
     await page.locator('#step1Enabled').uncheck();
