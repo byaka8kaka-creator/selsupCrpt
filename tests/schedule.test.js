@@ -14,7 +14,7 @@ async function harness(initial={}) {
     storage:{local:{async get(keys){return Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(data[k])]))},async set(values){Object.assign(data,structuredClone(values))}}},
     alarms:{async create(name,value){alarms.set(name,value)},async clear(name){return alarms.delete(name)},onAlarm:event('alarm')},
     runtime:{id:'test',onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
-    tabs:{async create(){return {id:++tabs,url:URL,status:'complete'}},async get(id){return {id,url:URL,status:'complete'}},async sendMessage(){return {ok:true,started:true}}},
+    tabs:{async create(){return {id:++tabs,url:URL,status:'complete'}},async get(id){return {id,url:URL,status:'complete'}},async remove(){},async sendMessage(){return {ok:true,started:true}}},
     scripting:{async executeScript(){}}
   };
   const source=(await readFile('extension/background.js','utf8')).replace(/^import .*?;\n/gm,'');

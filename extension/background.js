@@ -21,14 +21,29 @@ async function schedule() {
 async function finish(id, error) {
   const { run } = await chrome.storage.local.get('run');
   if (run?.id !== id) return;
-  await log(error ? 'error' : 'success', error || 'Завершено: включённые действия выполнены. Подтверждения и пропуски записаны в журнале.');
+  let message = error || 'Завершено: включённые действия выполнены. Подтверждения и пропуски записаны в журнале.';
+  if (!error && run.createdTab === true && Number.isInteger(run.tabId)) {
+    try {
+      const tab = await chrome.tabs.get(run.tabId);
+      if (/^https:\/\/selsup\.ru\/application\/integration\/crpt(?:[?#]|$)/.test(tab.url || '')) {
+        await chrome.tabs.remove(run.tabId);
+        message += ' Вкладка сценария закрыта.';
+      } else message += ' Вкладка сохранена: её адрес изменился.';
+    } catch {
+      await log('warning', 'Все действия завершены, но автоматическое закрытие вкладки не подтверждено. Она могла быть уже закрыта.');
+    }
+  }
+  await log(error ? 'error' : 'success', message);
   await chrome.storage.local.set({ run: null }); await chrome.alarms.clear(WATCH);
 }
 async function execute(run, s) {
   try {
     let tab;
     if (run.tabId != null) tab = await chrome.tabs.get(run.tabId);
-    else tab = await chrome.tabs.create({ url: URL, active: true });
+    else {
+      tab = await chrome.tabs.create({ url: URL, active: true });
+      run.createdTab = true;
+    }
     await exclusive(async () => {
       const state = await chrome.storage.local.get('run');
       if (state.run?.id !== run.id) throw Error('Запуск отменён.');

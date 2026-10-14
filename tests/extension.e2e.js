@@ -24,7 +24,10 @@ test('реальное расширение Chromium: настройки, 2 пр
   const context = await chromium.launchPersistentContext(profile, { executablePath: '/usr/lib/chromium/chromium', headless: true, ignoreDefaultArgs: ['--disable-extensions'],
     args: ['--no-sandbox', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
   try {
-    await context.route('https://selsup.ru/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture }));
+    let recordedClicks=[];
+    await context.exposeBinding('recordClicks',(_,clicks)=>{recordedClicks=clicks});
+    const trackedFixture=fixture.replace("sessionStorage.setItem('clicks',JSON.stringify(clicks));","sessionStorage.setItem('clicks',JSON.stringify(clicks));window.recordClicks(clicks);");
+    await context.route('https://selsup.ru/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: trackedFixture }));
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const id = new URL(worker.url()).host;
     const ui = await context.newPage(); await ui.goto(`chrome-extension://${id}/options.html`);
@@ -33,11 +36,14 @@ test('реальное расширение Chromium: настройки, 2 пр
     await ui.getByRole('button', { name: 'Сохранить настройки' }).click();
     await ui.waitForFunction(() => document.querySelector('#status').textContent === 'Настройки сохранены.');
     const command = (type, extra = {}) => ui.evaluate(async ({type, extra}) => chrome.runtime.sendMessage({ type, ...extra }), {type, extra});
+    const siteOpened=context.waitForEvent('page');
     assert.equal((await command('start')).ok, true);
+    let site=await siteOpened;
     assert.equal((await command('start')).ok, false, 'parallel execution rejected');
     await ui.waitForFunction(async () => !(await chrome.storage.local.get('run')).run, null, { timeout: 25000 });
-    let site = context.pages().find(p => p.url().startsWith('https://selsup.ru/'));
-    assert.deepEqual(await site.evaluate(() => clicks), sequence);
+    if(!site.isClosed())await site.waitForEvent('close',{timeout:5000});
+    assert.equal(site.isClosed(),true);
+    assert.deepEqual(recordedClicks, sequence);
     let state = await ui.evaluate(() => chrome.storage.local.get(['logs', 'settings']));
     assert.equal(state.logs.at(-1).level, 'success');
     assert.equal(state.logs.filter(l => l.message.includes(': нажатие.')).length, 11);

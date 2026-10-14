@@ -6,13 +6,13 @@ import { DEFAULTS, URL, validate, nextRun, dayKey } from '../extension/common.js
 import { clickAuthTarget } from '../extension/auth-debugger.js';
 
 test('service worker: расписание, взаимная блокировка, журнал, остановка и восстановление', async () => {
-  const data={}, alarms=new Map(), events={}; 
+  const data={}, alarms=new Map(), events={}, removed=[];
   const event=name=>({addListener(fn){events[name]=fn}});
   const chrome={
     storage:{local:{async get(keys){return Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,data[k]]))},async set(values){Object.assign(data,structuredClone(values))}}},
     alarms:{async create(name,value){alarms.set(name,value)},async clear(name){return alarms.delete(name)},onAlarm:event('alarm')},
     runtime:{id:'test',onMessage:event('message'),onInstalled:event('installed'),onStartup:event('startup')},
-    tabs:{async create(){return {id:1,url:URL,status:'complete'}},async get(){return {id:1,url:URL,status:'complete'}},async sendMessage(id,msg){if(msg.type==='execute')return {ok:true,started:true};return {ok:true}}},
+    tabs:{async create(){return {id:1,url:URL,status:'complete'}},async get(){return {id:1,url:URL,status:'complete'}},async remove(id){removed.push(id)},async sendMessage(id,msg){if(msg.type==='execute')return {ok:true,started:true};return {ok:true}}},
     scripting:{async executeScript(){}}
   };
   const source=(await readFile('extension/background.js','utf8')).replace(/^import .*?;\n/gm,'');
@@ -24,6 +24,7 @@ test('service worker: расписание, взаимная блокировк�
   assert.equal((await command('start')).ok,true); await settle();
   assert.equal((await command('start')).ok,false);
   assert.ok(data.run.tabId===1);
+  assert.equal(data.run.createdTab,true);
   assert.equal((await command('progress',{id:data.run.id,message:'Шаг 1'},{id:'test',tab:{id:2}})).ok,false);
   assert.equal((await command('progress',{id:data.run.id,message:'Шаг 1'},{id:'test',tab:{id:1}})).ok,true);
   const checkpoint={pass:1,waitUntil:Date.now(),deadline:Date.now()+10000};
@@ -41,14 +42,17 @@ test('service worker: расписание, взаимная блокировк�
   await command('authCheckpoint',{id:data.run.id,auth:null},{id:'test',tab:{id:1}});
   await command('finished',{id:data.run.id,result:{ok:true}},{id:'test',tab:{id:1}}); await settle();
   assert.equal(data.run,null); assert.equal(data.logs.at(-1).level,'success');
+  assert.deepEqual(removed,[1]);assert.match(data.logs.at(-1).message,/Вкладка сценария закрыта/);
   events.alarm({name:'daily'}); await settle();
   assert.equal(data.lastScheduledDay,dayKey()); assert.ok(data.run); const previous=data.run.id;
   await command('stop'); await command('finished',{id:previous,result:{ok:true}},{id:'test',tab:{id:1}}); await settle();
   assert.equal(data.run,null); assert.equal(data.logs.at(-1).level,'error');
+  assert.deepEqual(removed,[1],'Stop and stale success message do not close a tab');
   events.alarm({name:'daily'}); await settle(); assert.equal(data.run,null);
   assert.equal((await command('start')).ok,true); await settle(); assert.notEqual(data.run.id,previous);
   data.run.heartbeat=Date.now()-100000;
   events.alarm({name:'watchdog'}); await settle(); assert.equal(data.run,null); assert.match(data.logs.at(-1).message,/Связь/);
+  assert.deepEqual(removed,[1],'watchdog failures keep the tab');
   await settle();
   data.run={id:'old',heartbeat:0}; events.startup(); await settle();
   assert.equal(data.run,null); assert.match(data.logs.at(-1).message,/перезапуском/);
